@@ -39,6 +39,7 @@ from ..speech.asr import TranscriptionManager, TranscriptionResult
 from ..speech.diarization import SpeakerDiarization
 from ..database.manager import get_database
 from ..ai.openrouter import AISuggestionGenerator
+from ..ai.priority_queue import get_priority_queue
 
 logger = get_logger(__name__)
 
@@ -516,7 +517,14 @@ class MainWindow(QMainWindow):
         self.diarization = SpeakerDiarization()
         self.ai_generator = AISuggestionGenerator()
 
+        # Priority queue for AI responses
+        self.priority_queue = get_priority_queue()
+        self.priority_queue.response_ready.connect(self._on_ai_response_ready)
+        self.priority_queue.queue_depth_changed.connect(self._on_queue_depth_changed)
+        self.priority_queue.start()
+
         self.current_session_id: Optional[str] = None
+        self._pending_questions: dict = {}
         self.is_recording = False
 
         self.setup_ui()
@@ -763,7 +771,10 @@ class MainWindow(QMainWindow):
                 )
 
                 if self.ai_generator.is_question(result.text):
-                    self.generate_ai_response(result.text, result.message_id)
+                    # Track pending question
+                    self._pending_questions[result.message_id] = result.text
+                    # Enqueue to priority queue
+                    self.priority_queue.enqueue_question(result.text, result.message_id)
 
     def on_speaker_updated(self, message_id: str, speaker: str):
         """Handle speaker update from transcription."""
@@ -776,24 +787,21 @@ class MainWindow(QMainWindow):
         db = get_database()
         db.update_message_speaker(message_id, speaker)
 
-    def generate_ai_response(self, question: str, message_id: str):
-        """Generate AI response for a question."""
-        import threading
+    def _on_ai_response_ready(self, message_id: str, response: str):
+        """Handle AI response from priority queue."""
+        self.suggestions_widget.add_suggestion(
+            self._pending_questions.get(message_id, "Question"), response
+        )
+        if self.current_session_id:
+            db = get_database()
+            db.update_ai_response(message_id, response)
 
-        def generate():
-            try:
-                response = self.ai_generator.generate_response_sync(question)
-                if response:
-                    self.suggestions_widget.add_suggestion(question, response)
+        # Remove from pending
+        self._pending_questions.pop(message_id, None)
 
-                    if self.current_session_id:
-                        db = get_database()
-                        db.update_ai_response(message_id, response)
-            except Exception as e:
-                logger.error("Failed to generate AI response", error=str(e))
-
-        thread = threading.Thread(target=generate)
-        thread.start()
+    def _on_queue_depth_changed(self, priority_count: int, normal_count: int):
+        """Update queue depth display."""
+        self.status_bar.showMessage(f"Queue: Priority={priority_count} | Normal={normal_count}")
 
     def summarize_conversation(self):
         """Summarize the current conversation."""
@@ -879,6 +887,8 @@ class MainWindow(QMainWindow):
         """Handle window close event."""
         if self.is_recording:
             self.stop_recording()
+
+        self.priority_queue.stop()
 
         db = get_database()
         db.close()
