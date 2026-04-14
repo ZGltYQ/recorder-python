@@ -80,6 +80,15 @@ class LocalLLMConfig:
 
 
 @dataclass
+class ScreenshotConfig:
+    """Screenshot capture configuration."""
+
+    enabled: bool = False  # Screenshot mode off by default
+    interval: int = 30  # seconds, 5-300 range
+    max_count: int = 50  # circular buffer size
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
 
@@ -90,6 +99,7 @@ class AppConfig:
     diarization: DiarizationConfig = None
     priority_queue: PriorityQueueConfig = None
     local_llm: LocalLLMConfig = None
+    screenshot: ScreenshotConfig = None
     theme: str = "system"  # system, light, dark
     first_run: bool = True
     provider: str = "openrouter"  # LLM provider: "openrouter" or "local"
@@ -109,6 +119,8 @@ class AppConfig:
             self.priority_queue = PriorityQueueConfig()
         if self.local_llm is None:
             self.local_llm = LocalLLMConfig()
+        if self.screenshot is None:
+            self.screenshot = ScreenshotConfig()
 
 
 class ConfigManager:
@@ -156,6 +168,7 @@ class ConfigManager:
             "diarization": asdict(self.config.diarization),
             "priority_queue": asdict(self.config.priority_queue),
             "local_llm": asdict(self.config.local_llm),
+            "screenshot": asdict(self.config.screenshot),
             "theme": self.config.theme,
             "first_run": self.config.first_run,
             "provider": self.config.provider,
@@ -177,6 +190,8 @@ class ConfigManager:
             self.config.priority_queue = PriorityQueueConfig(**data["priority_queue"])
         if "local_llm" in data:
             self.config.local_llm = LocalLLMConfig(**data["local_llm"])
+        if "screenshot" in data:
+            self.config.screenshot = ScreenshotConfig(**data["screenshot"])
         if "theme" in data:
             self.config.theme = data["theme"]
         if "first_run" in data:
