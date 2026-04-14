@@ -123,3 +123,89 @@ def test_whitespace_only_text():
     chunks = chunker.chunk_text("   \n\t  ", source="test.txt")
     # Whitespace-only may produce no valid chunks
     assert isinstance(chunks, list)
+
+
+def test_rag_search_format(mock_chromadb):
+    """RAG-05, RAG-06: Verify search returns formatted results."""
+    from src.rag.manager import RAGManager
+
+    rag = RAGManager()
+
+    # Mock collection.query to return test results
+    mock_results = {
+        "ids": [["doc1_0", "doc1_1"]],
+        "documents": [["chunk text 1", "chunk text 2"]],
+        "metadatas": [[{"source": "test.txt"}, {"source": "test.txt"}]],
+        "distances": [[0.1, 0.2]],
+    }
+    rag._collection.query.return_value = mock_results
+
+    # Trigger search
+    results = []
+
+    def capture(r):
+        results.extend(r)
+
+    rag.search_complete.connect(capture)
+    rag.search("test query", top_k=2)
+
+    # Verify results formatted
+    assert len(results) == 2
+    assert results[0]["text"] == "chunk text 1"
+    assert results[0]["source"] == "test.txt"
+    assert "distance" in results[0]
+
+
+def test_citation_format_search():
+    """RAG-07: Verify citation badge format '📄 DocumentName.txt'."""
+    from src.rag.search import RAGSearch
+
+    search = RAGSearch(None, None)
+    citation = search.format_citation("document.txt")
+
+    assert citation == "📄 document.txt"
+    assert "📄" in citation
+    assert citation.endswith(".txt")
+
+
+def test_build_rag_prompt(mock_chromadb):
+    """RAG-06: Verify prompt includes context from search results."""
+    from src.rag.search import RAGSearch
+
+    search = RAGSearch(None, None)
+
+    mock_results = [
+        {"text": "The meeting is at 3pm.", "source": "notes.txt", "distance": 0.1},
+        {"text": "Action items include review.", "source": "notes.txt", "distance": 0.2},
+    ]
+
+    prompt, citations = search.build_rag_prompt("When is the meeting?", mock_results)
+
+    assert "The meeting is at 3pm" in prompt
+    assert "notes.txt" in prompt
+    assert "When is the meeting?" in prompt
+    assert len(citations) == 2
+    assert "📄 notes.txt" in citations
+
+
+def test_build_rag_prompt_empty_results(mock_chromadb):
+    """Verify prompt building with empty results."""
+    from src.rag.search import RAGSearch
+
+    search = RAGSearch(None, None)
+
+    prompt, citations = search.build_rag_prompt("When is the meeting?", [])
+
+    assert prompt is None
+    assert len(citations) == 0
+
+
+def test_citation_format_special_chars():
+    """RAG-07: Verify citation handles special characters in filename."""
+    from src.rag.search import RAGSearch
+
+    search = RAGSearch(None, None)
+    citation = search.format_citation("my document (1).txt")
+
+    assert citation == "📄 my document (1).txt"
+    assert citation.startswith("📄")

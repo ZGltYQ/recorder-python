@@ -3,5 +3,6 @@
 from .manager import RAGManager
 from .chunker import DocumentChunker
 from .embedding import EmbeddingWorker
+from .search import RAGSearch
 
-__all__ = ["RAGManager", "DocumentChunker", "EmbeddingWorker"]
+__all__ = ["RAGManager", "DocumentChunker", "EmbeddingWorker", "RAGSearch"]
