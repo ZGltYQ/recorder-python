@@ -52,7 +52,10 @@ Plans:
   4. When question is detected, app searches document knowledge base (top-k retrieval)
   5. Relevant document context is included in AI prompt for answering
   6. Answers sourced from documents show inline citation ("Answer from: DocumentName.pdf")
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 03-01-PLAN.md — Document upload, chunking, and embedding (Wave 1)
+- [ ] 03-02-PLAN.md — RAG search and citation display (Wave 2)
 **UI hint**: yes
 
 ### Phase 4: Screenshot Mode
@@ -75,5 +78,5 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Priority Queue Foundation | 2/2 | Ready to execute | - |
 | 2. Local LLM Client | 0/2 | Ready to plan | - |
-| 3. RAG Document Search | 0/7 | Not started | - |
+| 3. RAG Document Search | 0/2 | Ready to execute | - |
 | 4. Screenshot Mode | 0/6 | Not started | - |
