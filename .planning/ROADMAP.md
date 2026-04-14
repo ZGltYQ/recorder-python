@@ -24,8 +24,8 @@ Build AI-powered desktop recorder with local LLM support, RAG document search, s
   4. Queue depth (priority vs normal count) displayed in UI
 **Plans**: 2 plans
 Plans:
-- [ ] 01-01-PLAN.md — PriorityQueueManager with asyncio.PriorityQueue and Qt signals
-- [ ] 01-02-PLAN.md — Gap closure: Fix QueuedQuestion comparison operators and implement aging
+- [x] 01-01-PLAN.md — PriorityQueueManager with asyncio.PriorityQueue and Qt signals
+- [x] 01-02-PLAN.md — Gap closure: Fix QueuedQuestion comparison operators and implement aging
 
 ### Phase 2: Local LLM Client
 **Goal**: Users can configure and use custom local LLM API endpoints alongside OpenRouter
@@ -36,8 +36,10 @@ Plans:
   2. User can select which LLM provider to use per conversation (OpenRouter or Local)
   3. App calls local LLM API with OpenAI-compatible chat completions format
   4. Local LLM timeout is configurable (minimum 300s for cold-start models)
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 2 plans
+Plans:
+- [ ] 02-01-PLAN.md — LocalLLMClient and provider integration
+- [ ] 02-02-PLAN.md — Settings dialog Local LLM UI and provider selector
 
 ### Phase 3: RAG Document Search
 **Goal**: Users can upload documents and receive context-augmented AI answers with citations
@@ -72,6 +74,6 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Priority Queue Foundation | 2/2 | Ready to execute | - |
-| 2. Local LLM Client | 0/4 | Not started | - |
+| 2. Local LLM Client | 0/2 | Ready to plan | - |
 | 3. RAG Document Search | 0/7 | Not started | - |
 | 4. Screenshot Mode | 0/6 | Not started | - |
