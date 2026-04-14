@@ -22,9 +22,10 @@ Build AI-powered desktop recorder with local LLM support, RAG document search, s
   2. Background AI-detected questions enter normal queue
   3. Priority queue answered before normal queue with starvation prevention via aging
   4. Queue depth (priority vs normal count) displayed in UI
-**Plans**: 1 plan
+**Plans**: 2 plans
 Plans:
 - [ ] 01-01-PLAN.md — PriorityQueueManager with asyncio.PriorityQueue and Qt signals
+- [ ] 01-02-PLAN.md — Gap closure: Fix QueuedQuestion comparison operators and implement aging
 
 ### Phase 2: Local LLM Client
 **Goal**: Users can configure and use custom local LLM API endpoints alongside OpenRouter
@@ -70,7 +71,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Priority Queue Foundation | 1/4 | Ready to execute | - |
+| 1. Priority Queue Foundation | 2/2 | Ready to execute | - |
 | 2. Local LLM Client | 0/4 | Not started | - |
 | 3. RAG Document Search | 0/7 | Not started | - |
 | 4. Screenshot Mode | 0/6 | Not started | - |
