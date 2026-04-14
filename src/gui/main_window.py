@@ -515,7 +515,11 @@ class MainWindow(QMainWindow):
         self.audio_capture = AudioCapture()
         self.transcription_manager = TranscriptionManager()
         self.diarization = SpeakerDiarization()
-        self.ai_generator = AISuggestionGenerator()
+
+        # Initialize AI generator with provider from config
+        config = get_config()
+        self._current_provider = config.get("provider", "openrouter")
+        self.ai_generator = AISuggestionGenerator(provider=self._current_provider)
 
         # Priority queue for AI responses
         self.priority_queue = get_priority_queue()
@@ -586,6 +590,33 @@ class MainWindow(QMainWindow):
         suggestions_subheader = QLabel("Questions detected in conversation")
         suggestions_subheader.setObjectName("subheaderLabel")
         suggestions_layout.addWidget(suggestions_subheader)
+
+        # Provider selector
+        provider_layout = QHBoxLayout()
+        provider_label = QLabel("AI Provider:")
+        provider_label.setStyleSheet("color: #94a3b8;")
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["OpenRouter", "Local"])
+        self.provider_combo.setCurrentText(
+            "OpenRouter" if self._current_provider == "openrouter" else "Local"
+        )
+        self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        self.provider_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #1e293b;
+                color: #e2e8f0;
+                border: 1px solid #334155;
+                border-radius: 4px;
+                padding: 4px 8px;
+                min-width: 100px;
+            }
+            QComboBox:focus { border: 1px solid #3b82f6; }
+            QComboBox::drop-down { border: none; }
+        """)
+        provider_layout.addWidget(provider_label)
+        provider_layout.addWidget(self.provider_combo)
+        provider_layout.addStretch()
+        suggestions_layout.addLayout(provider_layout)
 
         self.suggestions_widget = AISuggestionsWidget()
         suggestions_layout.addWidget(self.suggestions_widget)
@@ -802,6 +833,18 @@ class MainWindow(QMainWindow):
     def _on_queue_depth_changed(self, priority_count: int, normal_count: int):
         """Update queue depth display."""
         self.status_bar.showMessage(f"Queue: Priority={priority_count} | Normal={normal_count}")
+
+    def _on_provider_changed(self, text: str):
+        """Handle AI provider change."""
+        new_provider = "openrouter" if text == "OpenRouter" else "local"
+        if new_provider != self._current_provider:
+            self._current_provider = new_provider
+            self.ai_generator.set_provider(new_provider)
+            # Save provider preference
+            config = get_config()
+            config.set("provider", new_provider)
+            self.status_bar.showMessage(f"AI Provider: {text}", 3000)
+            logger.info("Provider changed", provider=new_provider)
 
     def summarize_conversation(self):
         """Summarize the current conversation."""

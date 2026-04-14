@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
 from PySide6.QtGui import QFont, QColor, QPalette
 
-from ..utils.config import get_config
+from ..utils.config import get_config, LocalLLMConfig
 from ..ai.openrouter import OpenRouterClient, ModelInfo
 
 
@@ -110,6 +110,10 @@ class SettingsDialog(QDialog):
         # OpenRouter settings
         openrouter_group = self._create_openrouter_group()
         content_layout.addWidget(openrouter_group)
+
+        # Local LLM settings
+        local_llm_group = self._create_local_llm_group()
+        content_layout.addWidget(local_llm_group)
 
         # STT settings
         stt_group = self._create_stt_group()
@@ -236,6 +240,73 @@ class SettingsDialog(QDialog):
         selected_layout.addWidget(self.selected_model_label, 1)
 
         layout.addLayout(selected_layout)
+
+        group.setLayout(layout)
+        return group
+
+    def _create_local_llm_group(self) -> QGroupBox:
+        """Create Local LLM settings group."""
+        group = QGroupBox()
+        group.setTitle("Local LLM")
+
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+
+        # Enable Local LLM
+        enable_layout = QHBoxLayout()
+        self.local_llm_enable_cb = QCheckBox("Enable Local LLM")
+        enable_layout.addWidget(self.local_llm_enable_cb)
+        enable_layout.addStretch()
+        layout.addLayout(enable_layout)
+
+        # Base URL
+        url_layout = QHBoxLayout()
+        url_label = QLabel("Base URL:")
+        url_label.setFixedWidth(80)
+        url_layout.addWidget(url_label)
+
+        self.local_llm_url_input = QLineEdit()
+        self.local_llm_url_input.setPlaceholderText("http://localhost:8000/v1")
+        url_layout.addWidget(self.local_llm_url_input, 1)
+        layout.addLayout(url_layout)
+
+        # Model Name
+        model_layout = QHBoxLayout()
+        model_label = QLabel("Model Name:")
+        model_label.setFixedWidth(80)
+        model_layout.addWidget(model_label)
+
+        self.local_llm_model_input = QLineEdit()
+        self.local_llm_model_input.setPlaceholderText("local-model")
+        model_layout.addWidget(self.local_llm_model_input, 1)
+        layout.addLayout(model_layout)
+
+        # API Key (optional)
+        key_layout = QHBoxLayout()
+        key_label = QLabel("API Key:")
+        key_label.setFixedWidth(80)
+        key_layout.addWidget(key_label)
+
+        self.local_llm_key_input = QLineEdit()
+        self.local_llm_key_input.setPlaceholderText("Optional for local LLMs")
+        self.local_llm_key_input.setEchoMode(QLineEdit.Password)
+        key_layout.addWidget(self.local_llm_key_input, 1)
+        layout.addLayout(key_layout)
+
+        # Timeout
+        timeout_layout = QHBoxLayout()
+        timeout_label = QLabel("Timeout:")
+        timeout_label.setFixedWidth(80)
+        timeout_layout.addWidget(timeout_label)
+
+        self.local_llm_timeout_spin = QSpinBox()
+        self.local_llm_timeout_spin.setMinimum(300)
+        self.local_llm_timeout_spin.setMaximum(3600)
+        self.local_llm_timeout_spin.setSuffix(" sec")
+        self.local_llm_timeout_spin.setValue(300)
+        timeout_layout.addWidget(self.local_llm_timeout_spin)
+        timeout_layout.addStretch()
+        layout.addLayout(timeout_layout)
 
         group.setLayout(layout)
         return group
@@ -635,6 +706,14 @@ class SettingsDialog(QDialog):
         model = config.get("openrouter.model", "anthropic/claude-3.5-sonnet")
         self.selected_model_label.setText(model)
 
+        # Local LLM
+        local_llm = config.get("local_llm", {})
+        self.local_llm_enable_cb.setChecked(local_llm.get("enabled", False))
+        self.local_llm_url_input.setText(local_llm.get("base_url", "http://localhost:8000/v1"))
+        self.local_llm_model_input.setText(local_llm.get("model_name", "local-model"))
+        self.local_llm_key_input.setText(local_llm.get("api_key", ""))
+        self.local_llm_timeout_spin.setValue(local_llm.get("timeout", 300))
+
         # STT
         lang = config.get("stt.language", "auto")
         lang_text = f"{lang} ({self._get_lang_name(lang)})" if lang != "auto" else "auto (detect)"
@@ -737,6 +816,15 @@ class SettingsDialog(QDialog):
             config.set("openrouter.model", selected)
         else:
             config.set("openrouter.model", "anthropic/claude-3.5-sonnet")
+
+        # Local LLM
+        local_llm = config.get("local_llm", {})
+        local_llm["enabled"] = self.local_llm_enable_cb.isChecked()
+        local_llm["base_url"] = self.local_llm_url_input.text().strip()
+        local_llm["model_name"] = self.local_llm_model_input.text().strip()
+        local_llm["api_key"] = self.local_llm_key_input.text().strip()
+        local_llm["timeout"] = self.local_llm_timeout_spin.value()
+        config.set("local_llm", local_llm)
 
         # STT
         lang_text = self.lang_combo.currentText()
