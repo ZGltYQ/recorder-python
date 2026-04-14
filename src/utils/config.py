@@ -58,6 +58,17 @@ class DiarizationConfig:
 
 
 @dataclass
+class PriorityQueueConfig:
+    """Priority queue configuration."""
+
+    enabled: bool = True
+    aging_interval: int = 30  # seconds between aging increments
+    aging_factor: float = 0.5  # how much priority increases per aging interval
+    max_age: int = 10  # maximum aging steps before forced processing
+    max_concurrent: int = 2  # maximum concurrent AI API calls
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
 
@@ -66,6 +77,7 @@ class AppConfig:
     openrouter: OpenRouterConfig = None
     audio: AudioConfig = None
     diarization: DiarizationConfig = None
+    priority_queue: PriorityQueueConfig = None
     theme: str = "system"  # system, light, dark
     first_run: bool = True
 
@@ -80,6 +92,8 @@ class AppConfig:
             self.audio = AudioConfig()
         if self.diarization is None:
             self.diarization = DiarizationConfig()
+        if self.priority_queue is None:
+            self.priority_queue = PriorityQueueConfig()
 
 
 class ConfigManager:
@@ -125,6 +139,7 @@ class ConfigManager:
             "openrouter": asdict(self.config.openrouter),
             "audio": asdict(self.config.audio),
             "diarization": asdict(self.config.diarization),
+            "priority_queue": asdict(self.config.priority_queue),
             "theme": self.config.theme,
             "first_run": self.config.first_run,
         }
@@ -141,6 +156,8 @@ class ConfigManager:
             self.config.audio = AudioConfig(**data["audio"])
         if "diarization" in data:
             self.config.diarization = DiarizationConfig(**data["diarization"])
+        if "priority_queue" in data:
+            self.config.priority_queue = PriorityQueueConfig(**data["priority_queue"])
         if "theme" in data:
             self.config.theme = data["theme"]
         if "first_run" in data:
