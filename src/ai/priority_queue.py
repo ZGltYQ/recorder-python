@@ -204,11 +204,63 @@ class PriorityQueueManager(QObject):
             self._emit_queue_depth()
 
     def _apply_aging(self) -> None:
-        """Apply aging to normal queue items to prevent starvation."""
-        # We can't easily iterate asyncio.PriorityQueue, so we handle aging
-        # by adjusting how we calculate effective priority at dequeue time.
-        # The effective_priority field in QueuedQuestion is updated here.
-        pass  # Aging is applied at dequeue time by re-ordering
+        """Apply aging to normal queue items to prevent starvation.
+
+        Since asyncio.PriorityQueue uses heapq which doesn't support in-place reordering,
+        aging is implemented via a promotion mechanism:
+        1. Every aging_interval, we check for aged normal items
+        2. Items that have waited max_age intervals get promoted to priority queue
+        3. This is done by temporarily draining and re-queuing
+        """
+        if not self._running or self._queue.empty():
+            return
+
+        current_time = time.monotonic()
+        promoted = []
+        remaining = []
+
+        # Temporary drain
+        while not self._queue.empty():
+            try:
+                item = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            if not item.is_priority:
+                wait_time = current_time - item.timestamp
+                age_increments = int(wait_time / self.aging_interval)
+
+                # After max_age intervals, promote this item
+                if age_increments >= self.max_age:
+                    # Promote: mark as priority temporarily
+                    promoted_item = QueuedQuestion(
+                        priority=self.PRIORITY_BASE,  # Use priority base (1)
+                        timestamp=item.timestamp,  # Keep original timestamp for FIFO
+                        message_id=item.message_id,
+                        question=item.question,
+                        is_priority=True,  # Now treated as priority
+                    )
+                    promoted.append(promoted_item)
+                    logger.debug(
+                        "Item promoted to priority",
+                        message_id=item.message_id,
+                        age_increments=age_increments,
+                    )
+                else:
+                    remaining.append(item)
+            else:
+                remaining.append(item)
+
+        # Re-queue all items: promoted first (they're now priority), then remaining
+        for item in promoted:
+            self._queue.put_nowait(item)
+        for item in remaining:
+            self._queue.put_nowait(item)
+
+        if promoted:
+            self._priority_count += len(promoted)
+            self._normal_count -= len(promoted)
+            self._emit_queue_depth()
 
     def _emit_queue_depth(self) -> None:
         """Emit queue depth changed signal."""
