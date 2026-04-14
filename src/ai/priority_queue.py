@@ -34,6 +34,23 @@ class QueuedQuestion:
         age_increments = wait_time / aging_interval
         self.effective_priority = self.priority + (age_increments * aging_factor)
 
+    def __lt__(self, other: "QueuedQuestion") -> bool:
+        """Compare by priority first, then timestamp for FIFO within same priority."""
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self.timestamp < other.timestamp
+
+    def __le__(self, other: "QueuedQuestion") -> bool:
+        return self == other or self < other
+
+    def __gt__(self, other: "QueuedQuestion") -> bool:
+        if self.priority != other.priority:
+            return self.priority > other.priority
+        return self.timestamp > other.timestamp
+
+    def __ge__(self, other: "QueuedQuestion") -> bool:
+        return self == other or self > other
+
 
 class PriorityQueueManager(QObject):
     """Manages priority queue for AI question responses with starvation prevention."""
