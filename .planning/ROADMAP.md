@@ -71,8 +71,8 @@ Plans:
   6. Screenshot storage has retention policy (circular buffer, configurable max count)
 **Plans**: 2 plans
 Plans:
-- [ ] 04-01-PLAN.md — Screenshot capture infrastructure (QThread, storage, toggle)
-- [ ] 04-02-PLAN.md — AI analysis, task detection, auto-solve, and UI display
+- [x] 04-01-PLAN.md — Screenshot capture infrastructure (QThread, storage, toggle)
+- [x] 04-02-PLAN.md — AI analysis, task detection, auto-solve, and UI display
 **UI hint**: yes
 
 ## Progress
