@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QStackedWidget,
 )
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Signal
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QFont, QColor, QPalette
 import numpy as np
@@ -41,6 +41,7 @@ from ..database.manager import get_database
 from ..ai.openrouter import AISuggestionGenerator
 from ..ai.priority_queue import get_priority_queue
 from ..rag import RAGManager, DocumentChunker, EmbeddingWorker, RAGSearch
+from ..screenshot import ScreenshotCapture, ScreenshotStorage
 
 logger = get_logger(__name__)
 
@@ -613,6 +614,23 @@ class ControlPanel(QWidget):
 
         layout.addWidget(summarize_container)
 
+        # Screenshot button container
+        screenshot_container = QWidget()
+        screenshot_layout = QVBoxLayout(screenshot_container)
+        screenshot_layout.setSpacing(4)
+        screenshot_layout.setContentsMargins(0, 0, 0, 0)
+
+        screenshot_label = QLabel("")  # Empty label to match height
+        screenshot_label.setStyleSheet("font-size: 11px; min-height: 16px;")
+        screenshot_layout.addWidget(screenshot_label)
+
+        self.screenshot_btn = QPushButton("Enable Screenshots")
+        self.screenshot_btn.setCheckable(True)
+        self.screenshot_btn.setFixedHeight(36)
+        screenshot_layout.addWidget(self.screenshot_btn)
+
+        layout.addWidget(screenshot_container)
+
         layout.addStretch()
 
 
@@ -650,6 +668,14 @@ class MainWindow(QMainWindow):
         self.priority_queue.response_ready.connect(self._on_ai_response_ready)
         self.priority_queue.queue_depth_changed.connect(self._on_queue_depth_changed)
         self.priority_queue.start()
+
+        # Screenshot capture components
+        config = get_config()
+        screenshot_interval = config.get("screenshot.interval", 30)
+        screenshot_max_count = config.get("screenshot.max_count", 50)
+        self.screenshot_storage = ScreenshotStorage(max_count=screenshot_max_count)
+        self.screenshot_capture = ScreenshotCapture()
+        self.screenshot_capture.screenshot_ready.connect(self._on_screenshot_ready)
 
         self.current_session_id: Optional[str] = None
         self._pending_questions: dict = {}
@@ -820,6 +846,7 @@ class MainWindow(QMainWindow):
         self.control_panel.refresh_btn.clicked.connect(self.refresh_sources)
         self.control_panel.record_btn.clicked.connect(self.toggle_recording)
         self.control_panel.summarize_btn.clicked.connect(self.summarize_conversation)
+        self.control_panel.screenshot_btn.clicked.connect(self.on_screenshot_toggle)
 
         # Audio capture
         self.audio_capture.audio_data.connect(self.on_audio_data)
@@ -1316,10 +1343,54 @@ class MainWindow(QMainWindow):
         logger.error("Application error", error=error_msg)
         self.status_bar.showMessage(f"Error: {error_msg}")
 
+    def on_screenshot_toggle(self, checked: bool):
+        """Handle screenshot mode toggle.
+
+        Args:
+            checked: True if screenshot mode is being enabled
+        """
+        config = get_config()
+
+        if checked:
+            # Start screenshot capture
+            interval = config.get("screenshot.interval", 30)
+            if self.screenshot_capture.start(interval):
+                config.set("screenshot.enabled", True)
+                self.control_panel.screenshot_btn.setText("Disable Screenshots")
+                self.status_bar.showMessage("Screenshot mode enabled")
+                logger.info("Screenshot mode enabled", interval=interval)
+            else:
+                # Failed to start, uncheck the button
+                self.control_panel.screenshot_btn.setChecked(False)
+                self.status_bar.showMessage("Failed to enable screenshot mode")
+        else:
+            # Stop screenshot capture
+            self.screenshot_capture.stop()
+            config.set("screenshot.enabled", False)
+            self.control_panel.screenshot_btn.setText("Enable Screenshots")
+            self.status_bar.showMessage("Screenshot mode disabled")
+            logger.info("Screenshot mode disabled")
+
+    def _on_screenshot_ready(self, image):
+        """Handle captured screenshot.
+
+        Args:
+            image: PIL Image from ScreenshotCapture
+        """
+        # Store screenshot using storage (handles circular buffer eviction)
+        saved_path = self.screenshot_storage.add(image)
+        if saved_path:
+            logger.debug("Screenshot stored", path=saved_path)
+        # Note: In future phases, this will emit for AI analysis
+
     def closeEvent(self, event):
         """Handle window close event."""
         if self.is_recording:
             self.stop_recording()
+
+        # Stop screenshot capture if enabled
+        if self.screenshot_capture.is_enabled():
+            self.screenshot_capture.stop()
 
         self.priority_queue.stop()
 
