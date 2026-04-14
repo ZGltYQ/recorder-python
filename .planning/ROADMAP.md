@@ -54,8 +54,8 @@ Plans:
   6. Answers sourced from documents show inline citation ("Answer from: DocumentName.pdf")
 **Plans**: 2 plans
 Plans:
-- [ ] 03-01-PLAN.md — Document upload, chunking, and embedding (Wave 1)
-- [ ] 03-02-PLAN.md — RAG search and citation display (Wave 2)
+- [x] 03-01-PLAN.md — Document upload, chunking, and embedding (Wave 1)
+- [x] 03-02-PLAN.md — RAG search and citation display (Wave 2)
 **UI hint**: yes
 
 ### Phase 4: Screenshot Mode
@@ -69,7 +69,10 @@ Plans:
   4. Detected tasks are auto-solved by AI
   5. Task solutions displayed in side panel with explanation
   6. Screenshot storage has retention policy (circular buffer, configurable max count)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 04-01-PLAN.md — Screenshot capture infrastructure (QThread, storage, toggle)
+- [ ] 04-02-PLAN.md — AI analysis, task detection, auto-solve, and UI display
 **UI hint**: yes
 
 ## Progress
@@ -78,5 +81,5 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Priority Queue Foundation | 2/2 | Ready to execute | - |
 | 2. Local LLM Client | 0/2 | Ready to plan | - |
-| 3. RAG Document Search | 0/2 | Ready to execute | - |
-| 4. Screenshot Mode | 0/6 | Not started | - |
+| 3. RAG Document Search | 2/2 | Ready to execute | - |
+| 4. Screenshot Mode | 0/2 | Ready to execute | - |
