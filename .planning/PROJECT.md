@@ -19,6 +19,11 @@ Desktop audio recording application with AI-powered transcription, speaker diari
 - ✓ AI answer generation via OpenRouter — existing
 - ✓ Conversation storage in SQLite — existing
 - ✓ Results displayed in side panel — existing
+- ✓ SCRN-01: User can enable screenshot mode with configurable interval (seconds) — Phase 04
+- ✓ SCRN-02: App captures screenshot at configured interval — Phase 04
+- ✓ SCRN-03: Screenshot analyzed by AI for actionable tasks — Phase 04
+- ✓ SCRN-04: Detected tasks are auto-solved by AI — Phase 04
+- ✓ SCRN-05: Task solutions displayed in side panel with explanation — Phase 04
 
 ### Active
 
@@ -30,11 +35,6 @@ Desktop audio recording application with AI-powered transcription, speaker diari
 - [ ] **RAG-03**: When question is detected, app searches document knowledge base
 - [ ] **RAG-04**: Relevant document context included in AI prompt for answering
 - [ ] **RAG-05**: Answers sourced from documents are clearly indicated
-- [ ] **SCRN-01**: User can enable screenshot mode with configurable interval (seconds)
-- [ ] **SCRN-02**: App captures screenshot at configured interval
-- [ ] **SCRN-03**: Screenshot analyzed by AI for actionable tasks
-- [ ] **SCRN-04**: Detected tasks are auto-solved by AI
-- [ ] **SCRN-05**: Task solutions displayed in side panel with explanation
 - [ ] **PRIO-01**: Keyword-detected questions enter priority answer queue
 - [ ] **PRIO-02**: Background AI-detected questions enter normal queue
 - [ ] **PRIO-03**: Priority queue answered before normal queue
