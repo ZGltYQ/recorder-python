@@ -69,6 +69,17 @@ class PriorityQueueConfig:
 
 
 @dataclass
+class LocalLLMConfig:
+    """Local LLM API configuration."""
+
+    enabled: bool = False
+    base_url: str = "http://localhost:8000/v1"  # OpenAI-compatible endpoint
+    model_name: str = "local-model"
+    api_key: str = ""  # Optional for local LLMs
+    timeout: int = 300  # seconds, minimum 300s for cold-start models
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
 
@@ -78,8 +89,10 @@ class AppConfig:
     audio: AudioConfig = None
     diarization: DiarizationConfig = None
     priority_queue: PriorityQueueConfig = None
+    local_llm: LocalLLMConfig = None
     theme: str = "system"  # system, light, dark
     first_run: bool = True
+    provider: str = "openrouter"  # LLM provider: "openrouter" or "local"
 
     def __post_init__(self):
         if self.stt is None:
@@ -94,6 +107,8 @@ class AppConfig:
             self.diarization = DiarizationConfig()
         if self.priority_queue is None:
             self.priority_queue = PriorityQueueConfig()
+        if self.local_llm is None:
+            self.local_llm = LocalLLMConfig()
 
 
 class ConfigManager:
@@ -140,8 +155,10 @@ class ConfigManager:
             "audio": asdict(self.config.audio),
             "diarization": asdict(self.config.diarization),
             "priority_queue": asdict(self.config.priority_queue),
+            "local_llm": asdict(self.config.local_llm),
             "theme": self.config.theme,
             "first_run": self.config.first_run,
+            "provider": self.config.provider,
         }
 
     def _from_dict(self, data: Dict[str, Any]) -> None:
@@ -158,10 +175,14 @@ class ConfigManager:
             self.config.diarization = DiarizationConfig(**data["diarization"])
         if "priority_queue" in data:
             self.config.priority_queue = PriorityQueueConfig(**data["priority_queue"])
+        if "local_llm" in data:
+            self.config.local_llm = LocalLLMConfig(**data["local_llm"])
         if "theme" in data:
             self.config.theme = data["theme"]
         if "first_run" in data:
             self.config.first_run = data["first_run"]
+        if "provider" in data:
+            self.config.provider = data["provider"]
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a configuration value by key path (e.g., 'stt.language')."""

@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config
+from .local_llm import LocalLLMClient
 
 logger = get_logger(__name__)
 
@@ -283,9 +284,32 @@ class QuestionDetector:
 class AISuggestionGenerator:
     """Generates AI suggestions for questions."""
 
-    def __init__(self, client: Optional[OpenRouterClient] = None):
-        self.client = client or OpenRouterClient()
+    def __init__(self, client: Optional[OpenRouterClient] = None, provider: str = "openrouter"):
+        self.provider = provider
+        if client:
+            self.client = client
+        elif provider == "local":
+            self.client = LocalLLMClient()
+        else:
+            self.client = client or OpenRouterClient()
         self.question_detector = QuestionDetector()
+
+    def set_provider(self, provider: str) -> None:
+        """Switch LLM provider.
+
+        Args:
+            provider: "openrouter" or "local"
+        """
+        if provider not in ("openrouter", "local"):
+            raise ValueError(f"Invalid provider: {provider}")
+
+        if self.provider != provider:
+            self.provider = provider
+            if provider == "local":
+                self.client = LocalLLMClient()
+            else:
+                self.client = OpenRouterClient()
+            logger.info("Switched LLM provider", provider=provider)
 
     def is_question(self, text: str) -> bool:
         """Check if text is a question."""
@@ -299,28 +323,35 @@ class AISuggestionGenerator:
             logger.warning("OpenRouter not configured, skipping AI response")
             return None
 
-        # Build messages
+        # Build messages in OpenAI-compatible format (dicts)
         messages = [
-            Message(
-                role="system",
-                content="You are a helpful assistant. Provide concise, accurate answers to questions. "
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Provide concise, accurate answers to questions. "
                 "Keep responses brief and to the point (2-3 sentences max).",
-            )
+            }
         ]
 
         # Add context if provided
         if context:
             for msg in context[-5:]:  # Last 5 messages for context
-                messages.append(Message(role="user", content=msg.get("text", "")))
+                messages.append({"role": "user", "content": msg.get("text", "")})
 
         # Add the question
-        messages.append(Message(role="user", content=question))
+        messages.append({"role": "user", "content": question})
 
         try:
-            response = await self.client.chat(messages)
+            if self.provider == "local":
+                response = await self.client.chat(messages)
+            else:
+                # Convert to Message dataclass for OpenRouterClient
+                openrouter_messages = [
+                    Message(role=m["role"], content=m["content"]) for m in messages
+                ]
+                response = await self.client.chat(openrouter_messages)
             return response.content
         except Exception as e:
-            logger.error("Failed to generate AI response", error=str(e))
+            logger.error("Failed to generate AI response", error=str(e), provider=self.provider)
             return None
 
     def generate_response_sync(
@@ -344,17 +375,25 @@ class AISuggestionGenerator:
             [f"{msg.get('speaker', 'Unknown')}: {msg.get('text', '')}" for msg in messages]
         )
 
+        # Build messages in OpenAI-compatible format (dicts)
         messages_list = [
-            Message(
-                role="system",
-                content="Summarize the following conversation concisely. "
+            {
+                "role": "system",
+                "content": "Summarize the following conversation concisely. "
                 "Highlight key points and decisions made.",
-            ),
-            Message(role="user", content=conversation_text),
+            },
+            {"role": "user", "content": conversation_text},
         ]
 
         try:
-            response = await self.client.chat(messages_list)
+            if self.provider == "local":
+                response = await self.client.chat(messages_list)
+            else:
+                # Convert to Message dataclass for OpenRouterClient
+                openrouter_messages = [
+                    Message(role=m["role"], content=m["content"]) for m in messages_list
+                ]
+                response = await self.client.chat(openrouter_messages)
             return response.content
         except Exception as e:
             logger.error("Failed to generate summary", error=str(e))
