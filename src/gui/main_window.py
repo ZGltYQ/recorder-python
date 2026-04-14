@@ -809,6 +809,17 @@ class MainWindow(QMainWindow):
 
         suggestions_layout.addSpacing(12)
 
+        # Screenshot Tasks section
+        screenshot_label = QLabel("📸 Screenshot Tasks")
+        screenshot_label.setStyleSheet(
+            f"font-weight: 600; color: {COLORS['text']}; padding-top: 12px;"
+        )
+        suggestions_layout.addWidget(screenshot_label)
+
+        screenshot_subheader = QLabel("Tasks detected from screen captures")
+        screenshot_subheader.setObjectName("subheaderLabel")
+        suggestions_layout.addWidget(screenshot_subheader)
+
         # AI Suggestions section
         ai_label = QLabel("💡 AI Suggestions")
         ai_label.setStyleSheet(f"font-weight: 600; color: {COLORS['text']}; padding-top: 12px;")
