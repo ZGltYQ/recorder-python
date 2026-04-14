@@ -40,7 +40,7 @@ from ..speech.diarization import SpeakerDiarization
 from ..database.manager import get_database
 from ..ai.openrouter import AISuggestionGenerator
 from ..ai.priority_queue import get_priority_queue
-from ..rag import RAGManager, DocumentChunker, EmbeddingWorker
+from ..rag import RAGManager, DocumentChunker, EmbeddingWorker, RAGSearch
 
 logger = get_logger(__name__)
 
@@ -641,6 +641,7 @@ class MainWindow(QMainWindow):
         # Initialize RAG components
         self.rag_manager = RAGManager()
         self.chunker = DocumentChunker()
+        self.rag_search = RAGSearch(self.rag_manager, self.ai_generator)
         self._embedding_worker = None
         self._current_document_id = None
 
@@ -766,6 +767,7 @@ class MainWindow(QMainWindow):
         # RAG search button
         self.btn_rag_search = QPushButton("🔍 Search Knowledge Base")
         self.btn_rag_search.setFixedHeight(36)
+        self.btn_rag_search.setEnabled(False)  # Disabled until documents are uploaded
         self.btn_rag_search.clicked.connect(self.on_rag_search_clicked)
         suggestions_layout.addWidget(self.btn_rag_search)
 
@@ -974,6 +976,17 @@ class MainWindow(QMainWindow):
                 )
 
                 if self.ai_generator.is_question(result.text):
+                    # Store as last transcription for RAG search
+                    self.last_transcription = result.text
+
+                    # Check if documents exist for automatic RAG search
+                    docs = self.rag_manager.list_documents()
+                    if docs:
+                        # Automatic RAG search on question detection (D-04: hybrid approach)
+                        import asyncio
+
+                        asyncio.create_task(self._run_rag_search(result.text))
+
                     # Track pending question
                     self._pending_questions[result.message_id] = result.text
                     # Enqueue to priority queue
@@ -1196,6 +1209,8 @@ class MainWindow(QMainWindow):
         """Handle document indexing completion."""
         self.rag_progress.setText("Indexing complete")
         logger.info("Document indexed successfully", document_id=document_id)
+        # Enable search button since documents now exist
+        self.btn_rag_search.setEnabled(True)
 
     def on_document_delete(self, document_id: str):
         """Handle document deletion request.
@@ -1209,6 +1224,10 @@ class MainWindow(QMainWindow):
 
             # Remove from UI
             self.doc_list_widget.remove_document(document_id)
+
+            # Check if any documents remain
+            docs = self.rag_manager.list_documents()
+            self.btn_rag_search.setEnabled(len(docs) > 0)
 
             self.status_bar.showMessage("Document removed", 3000)
 
@@ -1233,8 +1252,37 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Upload documents first", 3000)
             return
 
+        # Disable button during search
+        self.btn_rag_search.setEnabled(False)
         self.status_bar.showMessage("Searching knowledge base...")
-        self.rag_manager.search(question, top_k=3)
+
+        # Run async search
+        import asyncio
+
+        asyncio.create_task(self._run_rag_search(question))
+
+    async def _run_rag_search(self, question: str):
+        """Run RAG search asynchronously.
+
+        Args:
+            question: Question to search for
+        """
+        try:
+            result = await self.rag_search.answer_with_context(question, top_k=3)
+
+            if result["has_context"] and result["answer"]:
+                # Display answer with citations
+                citations = " ".join(result["citations"])
+                display_text = f"{result['answer']}\n\n{citations}"
+                self.display_ai_response(display_text)
+                self.status_bar.showMessage("Search complete", 3000)
+            else:
+                self.status_bar.showMessage("No relevant documents found", 3000)
+        except Exception as e:
+            logger.error("RAG search failed", error=str(e))
+            self.status_bar.showMessage(f"Search failed: {str(e)}", 3000)
+        finally:
+            self.btn_rag_search.setEnabled(True)
 
     def get_current_question_text(self) -> str:
         """Get text from current transcription or selection to use as question."""
@@ -1245,8 +1293,23 @@ class MainWindow(QMainWindow):
         return ""
 
     def display_ai_response(self, text: str):
-        """Display AI response in suggestions widget with citation formatting."""
-        self.suggestions_widget.add_suggestion("Knowledge Base", text)
+        """Display AI response in suggestions widget with citation formatting.
+
+        Args:
+            text: Response text which may include citation badges (📄 DocumentName.txt)
+        """
+        # Split answer and citations if newline separation exists
+        parts = text.split("\n\n")
+        if len(parts) > 1:
+            answer = parts[0]
+            citations = parts[1]
+            display_text = (
+                f"{answer}\n\n<span style='color: #94a3b8; font-size: 12px;'>{citations}</span>"
+            )
+        else:
+            display_text = text
+
+        self.suggestions_widget.add_suggestion("Knowledge Base", display_text)
 
     def on_error(self, error_msg: str):
         """Handle errors."""
