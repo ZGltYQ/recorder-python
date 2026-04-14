@@ -40,6 +40,7 @@ from ..speech.diarization import SpeakerDiarization
 from ..database.manager import get_database
 from ..ai.openrouter import AISuggestionGenerator
 from ..ai.priority_queue import get_priority_queue
+from ..rag import RAGManager, DocumentChunker, EmbeddingWorker
 
 logger = get_logger(__name__)
 
@@ -69,6 +70,122 @@ SPEAKER_COLORS = [
     "#06b6d4",
     "#f97316",
 ]
+
+
+class DocumentDropZone(QFrame):
+    """Drop zone for document upload with drag-and-drop support."""
+
+    document_dropped = Signal(str)  # filepath
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setMinimumSize(300, 150)
+        self.setStyleSheet(f"""
+            QFrame {{
+                border: 2px dashed {COLORS["border"]};
+                border-radius: 8px;
+                background-color: {COLORS["surface"]};
+            }}
+            QFrame:hover {{
+                border-color: {COLORS["primary"]};
+            }}
+        """)
+
+        # Layout for drop zone content
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+
+        self.label = QLabel("📄 Drop TXT files here\nor click Upload")
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setStyleSheet(f"""
+            color: {COLORS["text_secondary"]};
+            font-size: 14px;
+            padding: 20px;
+        """)
+        layout.addWidget(self.label)
+
+    def dragEnterEvent(self, event):
+        """Handle drag enter event."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self.setStyleSheet(f"""
+                QFrame {{
+                    border: 2px dashed {COLORS["primary"]};
+                    border-radius: 8px;
+                    background-color: {COLORS["surface_light"]};
+                }}
+            """)
+
+    def dragLeaveEvent(self, event):
+        """Handle drag leave event."""
+        self.setStyleSheet(f"""
+            QFrame {{
+                border: 2px dashed {COLORS["border"]};
+                border-radius: 8px;
+                background-color: {COLORS["surface"]};
+            }}
+            QFrame:hover {{
+                border-color: {COLORS["primary"]};
+            }}
+        """)
+
+    def dropEvent(self, event):
+        """Handle file drop event."""
+        for url in event.mimeData().urls():
+            filepath = url.toLocalFile()
+            if filepath.endswith(".txt"):
+                self.document_dropped.emit(filepath)
+        self.setStyleSheet(f"""
+            QFrame {{
+                border: 2px dashed {COLORS["border"]};
+                border-radius: 8px;
+                background-color: {COLORS["surface"]};
+            }}
+            QFrame:hover {{
+                border-color: {COLORS["primary"]};
+            }}
+        """)
+
+
+class DocumentListWidget(QListWidget):
+    """List widget for displaying uploaded documents."""
+
+    delete_requested = Signal(str)  # document_id
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSpacing(4)
+        self.setFrameShape(QFrame.NoFrame)
+        self.document_items = {}  # document_id -> QListWidgetItem
+
+    def add_document(self, doc_info: dict):
+        """Add a document to the list.
+
+        Args:
+            doc_info: Dict with 'document_id' and 'source' keys
+        """
+        doc_id = doc_info.get("document_id", "unknown")
+        source = doc_info.get("source", "unknown")
+
+        # Check if already exists
+        if doc_id in self.document_items:
+            return
+
+        item = QListWidgetItem(f"📄 {source}")
+        item.setData(Qt.UserRole, doc_id)
+        self.addItem(item)
+        self.document_items[doc_id] = item
+
+    def remove_document(self, document_id: str):
+        """Remove a document from the list.
+
+        Args:
+            document_id: ID of document to remove
+        """
+        if document_id in self.document_items:
+            item = self.document_items.pop(document_id)
+            self.takeItem(self.row(item))
 
 
 class ModernStyle:
@@ -521,6 +638,12 @@ class MainWindow(QMainWindow):
         self._current_provider = config.get("provider", "openrouter")
         self.ai_generator = AISuggestionGenerator(provider=self._current_provider)
 
+        # Initialize RAG components
+        self.rag_manager = RAGManager()
+        self.chunker = DocumentChunker()
+        self._embedding_worker = None
+        self._current_document_id = None
+
         # Priority queue for AI responses
         self.priority_queue = get_priority_queue()
         self.priority_queue.response_ready.connect(self._on_ai_response_ready)
@@ -618,6 +741,46 @@ class MainWindow(QMainWindow):
         provider_layout.addStretch()
         suggestions_layout.addLayout(provider_layout)
 
+        # RAG Document section
+        rag_label = QLabel("📚 Knowledge Base")
+        rag_label.setStyleSheet(f"font-weight: 600; color: {COLORS['text']}; padding-top: 12px;")
+        suggestions_layout.addWidget(rag_label)
+
+        # Document drop zone
+        self.doc_drop_zone = DocumentDropZone()
+        suggestions_layout.addWidget(self.doc_drop_zone)
+
+        # Upload button row
+        upload_layout = QHBoxLayout()
+        self.btn_upload_doc = QPushButton("Upload Document")
+        self.btn_upload_doc.setFixedHeight(32)
+        self.btn_upload_doc.clicked.connect(self.on_upload_document)
+        upload_layout.addWidget(self.btn_upload_doc)
+        upload_layout.addStretch()
+        suggestions_layout.addLayout(upload_layout)
+
+        # Document list
+        self.doc_list_widget = DocumentListWidget()
+        suggestions_layout.addWidget(self.doc_list_widget)
+
+        # RAG search button
+        self.btn_rag_search = QPushButton("🔍 Search Knowledge Base")
+        self.btn_rag_search.setFixedHeight(36)
+        self.btn_rag_search.clicked.connect(self.on_rag_search_clicked)
+        suggestions_layout.addWidget(self.btn_rag_search)
+
+        # Progress bar for indexing
+        self.rag_progress = QLabel("")
+        self.rag_progress.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        suggestions_layout.addWidget(self.rag_progress)
+
+        suggestions_layout.addSpacing(12)
+
+        # AI Suggestions section
+        ai_label = QLabel("💡 AI Suggestions")
+        ai_label.setStyleSheet(f"font-weight: 600; color: {COLORS['text']}; padding-top: 12px;")
+        suggestions_layout.addWidget(ai_label)
+
         self.suggestions_widget = AISuggestionsWidget()
         suggestions_layout.addWidget(self.suggestions_widget)
 
@@ -668,6 +831,15 @@ class MainWindow(QMainWindow):
         # Diarization
         self.diarization.speaker_updated.connect(self.on_diarization_speaker)
         self.diarization.error.connect(self.on_error)
+
+        # RAG - Document upload
+        self.doc_drop_zone.document_dropped.connect(self.on_document_dropped)
+        self.doc_list_widget.delete_requested.connect(self.on_document_delete)
+
+        # RAG - Manager signals
+        self.rag_manager.indexing_progress.connect(self.on_indexing_progress)
+        self.rag_manager.indexing_complete.connect(self.on_indexing_complete)
+        self.rag_manager.error.connect(self.on_error)
 
     def initialize(self):
         """Initialize the application."""
@@ -920,6 +1092,161 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self)
         if dialog.exec():
             self.status_bar.showMessage("Settings saved")
+
+    def on_upload_document(self):
+        """Open file dialog to upload a document."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Document", "", "Text files (*.txt)"
+        )
+
+        if file_path:
+            self.on_document_dropped(file_path)
+
+    def on_document_dropped(self, filepath: str):
+        """Handle document drop or selection.
+
+        Args:
+            filepath: Path to the dropped/selected file
+        """
+        from pathlib import Path
+
+        filepath_path = Path(filepath)
+        if not filepath_path.exists():
+            self.status_bar.showMessage(f"File not found: {filepath}", 3000)
+            return
+
+        if not filepath.endswith(".txt"):
+            self.status_bar.showMessage("Only .txt files are supported", 3000)
+            return
+
+        # Generate document ID
+        import time
+
+        self._current_document_id = f"doc_{int(time.time() * 1000)}"
+
+        # Chunk the document
+        self.status_bar.showMessage(f"Indexing {filepath_path.name}...")
+        self.rag_progress.setText(f"Parsing {filepath_path.name}...")
+
+        try:
+            chunks = self.chunker.chunk_file(filepath_path)
+            if not chunks:
+                self.status_bar.showMessage("Failed to parse document", 3000)
+                return
+
+            # Store chunks for embedding
+            self._current_chunks = [
+                {"text": chunk.text, "metadata": chunk.metadata} for chunk in chunks
+            ]
+            self._current_source = filepath_path.name
+
+            # Start embedding worker
+            chunk_texts = [chunk.text for chunk in chunks]
+            self.rag_progress.setText(f"Computing embeddings for {len(chunks)} chunks...")
+
+            self._embedding_worker = EmbeddingWorker(chunk_texts)
+            self._embedding_worker.progress.connect(self.on_embedding_progress)
+            self._embedding_worker.complete.connect(self.on_embedding_complete)
+            self._embedding_worker.error.connect(self.on_embedding_error)
+            self._embedding_worker.start()
+
+        except Exception as e:
+            logger.error("Failed to process document", filepath=filepath, error=str(e))
+            self.status_bar.showMessage(f"Error: {str(e)}", 3000)
+
+    def on_embedding_progress(self, current: int, total: int):
+        """Handle embedding progress update."""
+        self.rag_progress.setText(f"Indexing: {current}/{total} batches...")
+
+    def on_embedding_complete(self, embeddings: list):
+        """Handle embedding completion.
+
+        Args:
+            embeddings: List of embedding vectors
+        """
+        try:
+            # Add to ChromaDB
+            self.rag_manager.add_document(
+                self._current_document_id, self._current_chunks, embeddings
+            )
+
+            # Add to UI list
+            self.doc_list_widget.add_document(
+                {"document_id": self._current_document_id, "source": self._current_source}
+            )
+
+            self.rag_progress.setText(f"✓ Indexed: {self._current_source}")
+            self.status_bar.showMessage(f"Document indexed: {self._current_source}", 3000)
+
+        except Exception as e:
+            logger.error("Failed to index document", error=str(e))
+            self.status_bar.showMessage(f"Indexing failed: {str(e)}", 3000)
+
+    def on_embedding_error(self, error: str):
+        """Handle embedding error."""
+        logger.error("Embedding failed", error=error)
+        self.status_bar.showMessage(f"Embedding failed: {error}", 3000)
+        self.rag_progress.setText("")
+
+    def on_indexing_progress(self, current: int, total: int):
+        """Handle document indexing progress."""
+        self.rag_progress.setText(f"Indexing: {current}/{total} chunks...")
+
+    def on_indexing_complete(self, document_id: str):
+        """Handle document indexing completion."""
+        self.rag_progress.setText("Indexing complete")
+        logger.info("Document indexed successfully", document_id=document_id)
+
+    def on_document_delete(self, document_id: str):
+        """Handle document deletion request.
+
+        Args:
+            document_id: ID of document to delete
+        """
+        try:
+            # Delete from ChromaDB
+            self.rag_manager.delete_document(document_id)
+
+            # Remove from UI
+            self.doc_list_widget.remove_document(document_id)
+
+            self.status_bar.showMessage("Document removed", 3000)
+
+        except Exception as e:
+            logger.error("Failed to delete document", document_id=document_id, error=str(e))
+            self.status_bar.showMessage(f"Delete failed: {str(e)}", 3000)
+
+    def on_rag_search_clicked(self):
+        """Handle manual RAG search button click."""
+        # Get the last transcribed text as question
+        question = ""
+        if hasattr(self, "last_transcription"):
+            question = self.last_transcription
+
+        if not question:
+            self.status_bar.showMessage("No question to search", 3000)
+            return
+
+        # Check if documents exist
+        docs = self.rag_manager.list_documents()
+        if not docs:
+            self.status_bar.showMessage("Upload documents first", 3000)
+            return
+
+        self.status_bar.showMessage("Searching knowledge base...")
+        self.rag_manager.search(question, top_k=3)
+
+    def get_current_question_text(self) -> str:
+        """Get text from current transcription or selection to use as question."""
+        if hasattr(self, "last_transcription"):
+            text = self.last_transcription
+            if self.ai_generator.is_question(text):
+                return text
+        return ""
+
+    def display_ai_response(self, text: str):
+        """Display AI response in suggestions widget with citation formatting."""
+        self.suggestions_widget.add_suggestion("Knowledge Base", text)
 
     def on_error(self, error_msg: str):
         """Handle errors."""
