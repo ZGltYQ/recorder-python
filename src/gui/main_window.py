@@ -41,7 +41,7 @@ from ..database.manager import get_database
 from ..ai.openrouter import AISuggestionGenerator
 from ..ai.priority_queue import get_priority_queue
 from ..rag import RAGManager, DocumentChunker, EmbeddingWorker, RAGSearch
-from ..screenshot import ScreenshotCapture, ScreenshotStorage
+from ..screenshot import ScreenshotCapture, ScreenshotStorage, ScreenshotAnalyzer
 
 logger = get_logger(__name__)
 
@@ -676,6 +676,11 @@ class MainWindow(QMainWindow):
         self.screenshot_storage = ScreenshotStorage(max_count=screenshot_max_count)
         self.screenshot_capture = ScreenshotCapture()
         self.screenshot_capture.screenshot_ready.connect(self._on_screenshot_ready)
+
+        # Screenshot analyzer
+        self.screenshot_analyzer = ScreenshotAnalyzer(ai_generator=self.ai_generator)
+        self.screenshot_analyzer.tasks_found.connect(self._on_screenshot_tasks_found)
+        self.screenshot_analyzer.error.connect(self.on_error)
 
         self.current_session_id: Optional[str] = None
         self._pending_questions: dict = {}
@@ -1381,7 +1386,31 @@ class MainWindow(QMainWindow):
         saved_path = self.screenshot_storage.add(image)
         if saved_path:
             logger.debug("Screenshot stored", path=saved_path)
-        # Note: In future phases, this will emit for AI analysis
+            # Analyze for actionable tasks
+            self.screenshot_analyzer.process_screenshot(saved_path)
+
+    def _on_screenshot_tasks_found(self, tasks: list):
+        """Display screenshot tasks in side panel.
+
+        Args:
+            tasks: List of {task, solution, priority} dicts from analyzer
+        """
+        for task_info in tasks:
+            task = task_info.get("task", "")
+            solution = task_info.get("solution", "")
+            priority = task_info.get("priority", "medium")
+
+            # Format with priority indicator
+            priority_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(priority, "⚪")
+            display_text = f"{priority_emoji} Screenshot Task\n\n{task}\n\n📋 Solution:\n{solution}"
+
+            # Truncate task for title if too long
+            title = f"Screenshot: {task[:50]}..." if len(task) > 50 else f"Screenshot: {task}"
+
+            self.suggestions_widget.add_suggestion(title, display_text)
+
+        if tasks:
+            logger.info("Screenshot tasks displayed", count=len(tasks))
 
     def closeEvent(self, event):
         """Handle window close event."""
