@@ -381,9 +381,49 @@ class TranscriptionWidget(QTextEdit):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setPlaceholderText("Transcriptions will appear here...")
-        self.messages = {}
+        self.messages: dict[str, tuple[str | None, str, bool]] = {}
+        self.message_order: list[str] = []
         self.speaker_colors = {}
         self.color_index = 0
+
+    def _render_message(
+        self, message_id: str, speaker: str | None, text: str, is_final: bool
+    ) -> str:
+        """Generate HTML for a single message."""
+        color = self.speaker_colors.get(speaker, COLORS["text_secondary"])
+        speaker_label = f"{speaker}" if speaker else "Unknown"
+
+        if is_final:
+            return (
+                f'<div style="margin: 8px 0; padding: 12px;'
+                f" background-color: {COLORS['surface']};"
+                f' border-radius: 8px; border-left: 4px solid {color};">'
+                f'<div style="color: {color}; font-weight: 600;'
+                f' font-size: 11px; margin-bottom: 4px;">'
+                f"{speaker_label}</div>"
+                f'<div style="color: {COLORS["text"]};'
+                f' line-height: 1.5;">{text}</div></div>'
+            )
+        else:
+            return (
+                f'<div style="margin: 8px 0; padding: 12px;'
+                f" background-color: {COLORS['surface']};"
+                f' border-radius: 8px; opacity: 0.7;">'
+                f'<div style="color: {COLORS["text_secondary"]};'
+                f' font-style: italic;">{text}...</div></div>'
+            )
+
+    def _rebuild_html(self):
+        """Regenerate all message HTML from stored state."""
+        parts = []
+        for mid in self.message_order:
+            speaker, text, is_final = self.messages[mid]
+            parts.append(self._render_message(mid, speaker, text, is_final))
+        scrollbar = self.verticalScrollBar()
+        was_at_bottom = scrollbar.value() >= scrollbar.maximum() - 20
+        self.setHtml("".join(parts))
+        if was_at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
 
     def add_message(
         self, message_id: str, text: str, speaker: str | None = None, is_final: bool = True
@@ -392,45 +432,33 @@ class TranscriptionWidget(QTextEdit):
             self.speaker_colors[speaker] = SPEAKER_COLORS[self.color_index % len(SPEAKER_COLORS)]
             self.color_index += 1
 
-        color = self.speaker_colors.get(speaker, COLORS["text_secondary"])
-        speaker_label = f"{speaker}" if speaker else "Unknown"
-
-        if is_final:
-            html = f"""
-            <div style="margin: 8px 0; padding: 12px; background-color: {COLORS["surface"]}; 
-                        border-radius: 8px; border-left: 4px solid {color};">
-                <div style="color: {color}; font-weight: 600; font-size: 11px; margin-bottom: 4px;">
-                    {speaker_label}
-                </div>
-                <div style="color: {COLORS["text"]}; line-height: 1.5;">
-                    {text}
-                </div>
-            </div>
-            """
-        else:
-            html = f"""
-            <div style="margin: 8px 0; padding: 12px; background-color: {COLORS["surface"]};
-                        border-radius: 8px; opacity: 0.7;">
-                <div style="color: {COLORS["text_secondary"]}; font-style: italic;">
-                    {text}...
-                </div>
-            </div>
-            """
-
+        is_update = message_id in self.messages
         self.messages[message_id] = (speaker, text, is_final)
-        self.append(html)
 
-        scrollbar = self.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        if is_update:
+            self._rebuild_html()
+        else:
+            self.message_order.append(message_id)
+            html = self._render_message(message_id, speaker, text, is_final)
+            self.append(html)
+            scrollbar = self.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def update_speaker(self, message_id: str, speaker: str):
         if message_id in self.messages:
+            if speaker and speaker not in self.speaker_colors:
+                self.speaker_colors[speaker] = SPEAKER_COLORS[
+                    self.color_index % len(SPEAKER_COLORS)
+                ]
+                self.color_index += 1
             old_speaker, text, is_final = self.messages[message_id]
             self.messages[message_id] = (speaker, text, is_final)
+            self._rebuild_html()
 
     def clear_messages(self):
         self.clear()
         self.messages = {}
+        self.message_order = []
         self.speaker_colors = {}
         self.color_index = 0
 
