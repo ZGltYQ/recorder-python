@@ -1,31 +1,45 @@
 """Settings dialog with modern styling."""
 
+import os
 from pathlib import Path
-from typing import List, Optional
+
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
-    QVBoxLayout,
+    QFileDialog,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QComboBox,
-    QPushButton,
-    QGroupBox,
-    QCheckBox,
-    QSpinBox,
-    QDoubleSpinBox,
-    QWidget,
     QListWidget,
     QListWidgetItem,
-    QScrollArea,
-    QFrame,
+    QMessageBox,
     QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QThread
-from PySide6.QtGui import QFont, QColor, QPalette
 
-from ..utils.config import get_config, LocalLLMConfig
-from ..ai.openrouter import OpenRouterClient, ModelInfo
+from ..ai.openrouter import ModelInfo, OpenRouterClient
+from ..utils.config import get_config
+from ..utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# RAG imports - these are optional dependencies
+try:
+    from ..rag import RAGManager
+
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+    RAGManager = None
 
 
 class ModelFetchThread(QThread):
@@ -127,6 +141,10 @@ class SettingsDialog(QDialog):
         diarization_group = self._create_diarization_group()
         content_layout.addWidget(diarization_group)
 
+        # Knowledge Base / RAG settings
+        rag_group = self._create_rag_group()
+        content_layout.addWidget(rag_group)
+
         content_layout.addStretch()
 
         scroll.setWidget(content_widget)
@@ -157,16 +175,23 @@ class SettingsDialog(QDialog):
     def _create_openrouter_group(self) -> QGroupBox:
         """Create OpenRouter settings group."""
         group = QGroupBox()
-        group.setTitle("OpenRouter API")
-
         layout = QVBoxLayout()
         layout.setSpacing(12)
+
+        # Header with icon and title
+        header_layout = QHBoxLayout()
+        header_title = QLabel("OpenRouter API")
+        header_title.setStyleSheet("font-weight: 600; font-size: 14px; color: #f8fafc;")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
 
         # API Key row
         api_key_layout = QHBoxLayout()
         api_key_label = QLabel("API Key:")
-        api_key_label.setFixedWidth(80)
-        api_key_layout.addWidget(api_key_label)
+        api_key_label.setMinimumWidth(100)
+        api_key_label.setMinimumHeight(24)
+        api_key_layout.addWidget(api_key_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -175,9 +200,23 @@ class SettingsDialog(QDialog):
         api_key_layout.addWidget(self.api_key_input, 1)
 
         # Show/hide toggle
-        self.toggle_key_btn = QPushButton("👁")
-        self.toggle_key_btn.setFixedWidth(36)
+        self.toggle_key_btn = QPushButton("Show")
+        self.toggle_key_btn.setFixedWidth(50)
         self.toggle_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_key_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #475569;
+                color: #f8fafc;
+                border: 1px solid #6366f1;
+                border-radius: 6px;
+                padding: 6px 8px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #6366f1;
+            }
+        """)
         self.toggle_key_btn.clicked.connect(self._toggle_api_key_visibility)
         api_key_layout.addWidget(self.toggle_key_btn)
 
@@ -196,8 +235,9 @@ class SettingsDialog(QDialog):
         # Provider filter
         provider_layout = QHBoxLayout()
         provider_label = QLabel("Provider:")
-        provider_label.setFixedWidth(80)
-        provider_layout.addWidget(provider_label)
+        provider_label.setMinimumWidth(100)
+        provider_label.setMinimumHeight(24)
+        provider_layout.addWidget(provider_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.provider_combo = QComboBox()
         self.provider_combo.addItem("All Providers", "")
@@ -205,10 +245,24 @@ class SettingsDialog(QDialog):
         provider_layout.addWidget(self.provider_combo, 1)
 
         # Refresh button
-        self.refresh_models_btn = QPushButton("↻")
-        self.refresh_models_btn.setFixedWidth(36)
+        self.refresh_models_btn = QPushButton("Refresh")
+        self.refresh_models_btn.setFixedWidth(70)
         self.refresh_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_models_btn.setToolTip("Refresh model list")
+        self.refresh_models_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #475569;
+                color: #f8fafc;
+                border: 1px solid #6366f1;
+                border-radius: 6px;
+                padding: 6px 8px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #6366f1;
+            }
+        """)
         self.refresh_models_btn.clicked.connect(self._refresh_models)
         provider_layout.addWidget(self.refresh_models_btn)
 
@@ -247,10 +301,16 @@ class SettingsDialog(QDialog):
     def _create_local_llm_group(self) -> QGroupBox:
         """Create Local LLM settings group."""
         group = QGroupBox()
-        group.setTitle("Local LLM")
-
         layout = QVBoxLayout()
         layout.setSpacing(12)
+
+        # Header with icon and title
+        header_layout = QHBoxLayout()
+        header_title = QLabel("Local LLM")
+        header_title.setStyleSheet("font-weight: 600; font-size: 14px; color: #f8fafc;")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
 
         # Enable Local LLM
         enable_layout = QHBoxLayout()
@@ -262,8 +322,9 @@ class SettingsDialog(QDialog):
         # Base URL
         url_layout = QHBoxLayout()
         url_label = QLabel("Base URL:")
-        url_label.setFixedWidth(80)
-        url_layout.addWidget(url_label)
+        url_label.setMinimumWidth(100)
+        url_label.setMinimumHeight(24)
+        url_layout.addWidget(url_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.local_llm_url_input = QLineEdit()
         self.local_llm_url_input.setPlaceholderText("http://localhost:8000/v1")
@@ -273,8 +334,9 @@ class SettingsDialog(QDialog):
         # Model Name
         model_layout = QHBoxLayout()
         model_label = QLabel("Model Name:")
-        model_label.setFixedWidth(80)
-        model_layout.addWidget(model_label)
+        model_label.setMinimumWidth(100)
+        model_label.setMinimumHeight(24)
+        model_layout.addWidget(model_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.local_llm_model_input = QLineEdit()
         self.local_llm_model_input.setPlaceholderText("local-model")
@@ -284,8 +346,9 @@ class SettingsDialog(QDialog):
         # API Key (optional)
         key_layout = QHBoxLayout()
         key_label = QLabel("API Key:")
-        key_label.setFixedWidth(80)
-        key_layout.addWidget(key_label)
+        key_label.setMinimumWidth(100)
+        key_label.setMinimumHeight(24)
+        key_layout.addWidget(key_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.local_llm_key_input = QLineEdit()
         self.local_llm_key_input.setPlaceholderText("Optional for local LLMs")
@@ -296,8 +359,9 @@ class SettingsDialog(QDialog):
         # Timeout
         timeout_layout = QHBoxLayout()
         timeout_label = QLabel("Timeout:")
-        timeout_label.setFixedWidth(80)
-        timeout_layout.addWidget(timeout_label)
+        timeout_label.setMinimumWidth(100)
+        timeout_label.setMinimumHeight(24)
+        timeout_layout.addWidget(timeout_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.local_llm_timeout_spin = QSpinBox()
         self.local_llm_timeout_spin.setMinimum(300)
@@ -314,16 +378,23 @@ class SettingsDialog(QDialog):
     def _create_stt_group(self) -> QGroupBox:
         """Create STT settings group."""
         group = QGroupBox()
-        group.setTitle("Speech Recognition")
-
         layout = QVBoxLayout()
         layout.setSpacing(12)
+
+        # Header with icon and title
+        header_layout = QHBoxLayout()
+        header_title = QLabel("Speech Recognition")
+        header_title.setStyleSheet("font-weight: 600; font-size: 14px; color: #f8fafc;")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
 
         # Language
         lang_layout = QHBoxLayout()
         lang_label = QLabel("Language:")
-        lang_label.setFixedWidth(80)
-        lang_layout.addWidget(lang_label)
+        lang_label.setMinimumWidth(100)
+        lang_label.setMinimumHeight(24)
+        lang_layout.addWidget(lang_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.lang_combo = QComboBox()
         self.lang_combo.addItems(
@@ -342,34 +413,29 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(lang_layout)
 
-        # Model size
-        size_layout = QHBoxLayout()
-        size_label = QLabel("Model Size:")
-        size_label.setFixedWidth(80)
-        size_layout.addWidget(size_label)
-
-        self.size_combo = QComboBox()
-        self.size_combo.addItems(["small", "medium", "large"])
-        size_layout.addWidget(self.size_combo, 1)
-
-        layout.addLayout(size_layout)
-
         group.setLayout(layout)
         return group
 
     def _create_qwen_group(self) -> QGroupBox:
         """Create Qwen3-ASR settings group."""
         group = QGroupBox()
-        group.setTitle("Qwen3-ASR Model")
-
         layout = QVBoxLayout()
         layout.setSpacing(12)
+
+        # Header with icon and title
+        header_layout = QHBoxLayout()
+        header_title = QLabel("Qwen3-ASR Model")
+        header_title.setStyleSheet("font-weight: 600; font-size: 14px; color: #f8fafc;")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
 
         # Model size
         qwen_size_layout = QHBoxLayout()
         qwen_size_label = QLabel("Model Size:")
-        qwen_size_label.setFixedWidth(80)
-        qwen_size_layout.addWidget(qwen_size_label)
+        qwen_size_label.setMinimumWidth(100)
+        qwen_size_label.setMinimumHeight(24)
+        qwen_size_layout.addWidget(qwen_size_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.qwen_size_combo = QComboBox()
         self.qwen_size_combo.addItem("0.6B (~1.2 GB) - Faster", "0.6B")
@@ -398,19 +464,19 @@ class SettingsDialog(QDialog):
         download_layout = QHBoxLayout()
         download_layout.setSpacing(8)
 
-        self.download_0_6b_btn = QPushButton("📥 0.6B")
+        self.download_0_6b_btn = QPushButton("0.6B")
         self.download_0_6b_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.download_0_6b_btn.setToolTip("Download the 0.6B model (~1.2 GB)")
         self.download_0_6b_btn.clicked.connect(lambda: self._download_qwen_model("0.6B"))
         download_layout.addWidget(self.download_0_6b_btn)
 
-        self.download_1_7b_btn = QPushButton("📥 1.7B")
+        self.download_1_7b_btn = QPushButton("1.7B")
         self.download_1_7b_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.download_1_7b_btn.setToolTip("Download the 1.7B model (~3.4 GB)")
         self.download_1_7b_btn.clicked.connect(lambda: self._download_qwen_model("1.7B"))
         download_layout.addWidget(self.download_1_7b_btn)
 
-        download_all_btn = QPushButton("📥 All")
+        download_all_btn = QPushButton("All")
         download_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         download_all_btn.setToolTip("Download both model sizes")
         download_all_btn.clicked.connect(lambda: self._download_qwen_model("all"))
@@ -425,15 +491,218 @@ class SettingsDialog(QDialog):
     def _create_diarization_group(self) -> QGroupBox:
         """Create diarization settings group."""
         group = QGroupBox()
-        group.setTitle("Speaker Diarization")
-
         layout = QVBoxLayout()
+        layout.setSpacing(12)
+
+        # Header with icon and title
+        header_layout = QHBoxLayout()
+        header_title = QLabel("Speaker Diarization")
+        header_title.setStyleSheet("font-weight: 600; font-size: 14px; color: #f8fafc;")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
 
         self.diarization_check = QCheckBox("Enable speaker diarization")
         layout.addWidget(self.diarization_check)
 
         group.setLayout(layout)
         return group
+
+    def _create_rag_group(self) -> QGroupBox:
+        """Create Knowledge Base / RAG settings group."""
+        group = QGroupBox()
+        layout = QVBoxLayout()
+        layout.setSpacing(16)
+
+        # Header with icon and title
+        header_layout = QHBoxLayout()
+        header_title = QLabel("Knowledge Base (RAG)")
+        header_title.setStyleSheet("font-weight: 600; font-size: 14px; color: #f8fafc;")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+
+        # Info label
+        info_label = QLabel("Upload documents to enable AI-powered knowledge base search.")
+        info_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        layout.addWidget(info_label)
+
+        # Upload button
+        self.btn_upload_doc_settings = QPushButton("Upload Document")
+        self.btn_upload_doc_settings.setFixedHeight(36)
+        self.btn_upload_doc_settings.clicked.connect(self.on_upload_document_settings)
+        layout.addWidget(self.btn_upload_doc_settings)
+
+        # Document list
+        doc_list_label = QLabel("Uploaded Documents:")
+        doc_list_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(doc_list_label)
+
+        self.doc_list_settings = QListWidget()
+        self.doc_list_settings.setMinimumHeight(120)
+        layout.addWidget(self.doc_list_settings)
+
+        # Delete document button
+        self.btn_delete_doc_settings = QPushButton("Delete Selected")
+        self.btn_delete_doc_settings.setFixedHeight(32)
+        self.btn_delete_doc_settings.setEnabled(False)
+        self.btn_delete_doc_settings.clicked.connect(self.on_delete_document_settings)
+        self.doc_list_settings.itemSelectionChanged.connect(
+            lambda: self.btn_delete_doc_settings.setEnabled(
+                len(self.doc_list_settings.selectedItems()) > 0
+            )
+        )
+        layout.addWidget(self.btn_delete_doc_settings)
+
+        # Search button
+        self.btn_rag_search_settings = QPushButton("Search Knowledge Base")
+        self.btn_rag_search_settings.setFixedHeight(36)
+        self.btn_rag_search_settings.setEnabled(False)
+        self.btn_rag_search_settings.clicked.connect(self.on_rag_search_settings)
+        layout.addWidget(self.btn_rag_search_settings)
+
+        # Progress indicator
+        self.rag_progress_settings = QLabel("")
+        self.rag_progress_settings.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        layout.addWidget(self.rag_progress_settings)
+
+        group.setLayout(layout)
+        return group
+
+    def _init_rag_manager(self):
+        """Initialize RAG manager for settings dialog."""
+        if not RAG_AVAILABLE:
+            return None
+        try:
+            if not hasattr(self, "_rag_manager") or self._rag_manager is None:
+                self._rag_manager = RAGManager()
+            return self._rag_manager
+        except Exception as e:
+            logger.warning(f"RAG manager not available: {e}")
+            return None
+
+    def on_upload_document_settings(self):
+        """Handle document upload from settings dialog."""
+        if not RAG_AVAILABLE:
+            QMessageBox.warning(
+                self,
+                "RAG Not Available",
+                "The knowledge base feature requires chromadb.\n"
+                "Please install it with: pip install chromadb",
+            )
+            return
+
+        rag = self._init_rag_manager()
+        if rag is None:
+            QMessageBox.warning(
+                self, "RAG Error", "Failed to initialize knowledge base. Please check the logs."
+            )
+            return
+
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Documents", "", "Text Files (*.txt);;All Files (*)"
+        )
+
+        if not file_paths:
+            return
+
+        self.rag_progress_settings.setText("Indexing documents...")
+        self.btn_upload_doc_settings.setEnabled(False)
+
+        try:
+            for filepath in file_paths:
+                filename = os.path.basename(filepath)
+                self._index_document_async(rag, filepath, filename)
+        except Exception as e:
+            self.rag_progress_settings.setText("")
+            self.btn_upload_doc_settings.setEnabled(True)
+            QMessageBox.critical(self, "Upload Error", str(e))
+
+    def _index_document_async(self, rag, filepath: str, filename: str):
+        """Index a document asynchronously."""
+        try:
+            with open(filepath, encoding="utf-8") as f:
+                content = f.read()
+
+            doc_id = rag.add_document(content, source=filename)
+            self._refresh_document_list()
+
+            self.rag_progress_settings.setText(f"Indexed: {filename}")
+            self.btn_rag_search_settings.setEnabled(True)
+        except Exception as e:
+            self.rag_progress_settings.setText(f"Error: {e}")
+        finally:
+            self.btn_upload_doc_settings.setEnabled(True)
+
+    def _refresh_document_list(self):
+        """Refresh the document list in settings."""
+        self.doc_list_settings.clear()
+        rag = self._init_rag_manager()
+        if rag is None:
+            return
+
+        try:
+            docs = rag.list_documents()
+            for doc in docs:
+                item = QListWidgetItem(doc.get("title", "Untitled"))
+                item.setData(Qt.ItemDataRole.UserRole, doc.get("id"))
+                self.doc_list_settings.addItem(item)
+        except Exception as e:
+            logger.warning(f"Failed to refresh document list: {e}")
+
+    def on_delete_document_settings(self):
+        """Handle document deletion from settings dialog."""
+        selected = self.doc_list_settings.selectedItems()
+        if not selected:
+            return
+
+        rag = self._init_rag_manager()
+        if rag is None:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Document",
+            f"Delete {len(selected)} document(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        for item in selected:
+            doc_id = item.data(Qt.ItemDataRole.UserRole)
+            if doc_id:
+                try:
+                    rag.delete_document(doc_id)
+                except Exception as e:
+                    logger.warning(f"Failed to delete document {doc_id}: {e}")
+
+        self._refresh_document_list()
+
+        # Check if any documents remain
+        rag = self._init_rag_manager()
+        if rag:
+            docs = rag.list_documents()
+            self.btn_rag_search_settings.setEnabled(len(docs) > 0)
+
+    def on_rag_search_settings(self):
+        """Handle knowledge base search from settings dialog."""
+        text, ok = (
+            QFileDialog.getSaveFileName(
+                self, "Search Results", "", "Text Files (*.txt);;All Files (*)"
+            )
+            if False
+            else (None, False)
+        )  # Just show a simple input for now
+
+        # For now, just show a message
+        QMessageBox.information(
+            self,
+            "Knowledge Base",
+            "Use the AI Suggestions panel to ask questions.\n"
+            "The AI will search your knowledge base for relevant context.",
+        )
 
     def _apply_styles(self):
         """Apply modern dark theme styling."""
@@ -444,31 +713,20 @@ class SettingsDialog(QDialog):
             }
             
             QGroupBox {
-                background-color: #1e293b;
+                background-color: transparent;
                 border: 1px solid #334155;
                 border-radius: 12px;
                 margin-top: 8px;
-                padding-top: 20px;
-                padding-left: 16px;
-                padding-right: 16px;
-                padding-bottom: 16px;
+                padding: 12px 16px 16px 16px;
                 font-weight: 600;
                 font-size: 14px;
                 color: #f8fafc;
-            }
-
-            QGroupBox::title {
-                color: #f8fafc;
-                subcontrol-origin: margin;
-                left: 12px;
-                top: 6px;
-                padding: 0 8px;
-                background-color: transparent;
             }
             
             QLabel {
                 color: #e2e8f0;
                 font-size: 13px;
+                background: transparent;
             }
             
             QLineEdit {
@@ -521,7 +779,7 @@ class SettingsDialog(QDialog):
                 color: #f8fafc;
                 border: 1px solid #475569;
                 border-radius: 8px;
-                padding: 10px 18px;
+                padding: 8px 16px;
                 font-size: 13px;
                 font-weight: 500;
             }
@@ -597,10 +855,10 @@ class SettingsDialog(QDialog):
         """Toggle API key visibility."""
         if self.api_key_input.echoMode() == QLineEdit.EchoMode.Password:
             self.api_key_input.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.toggle_key_btn.setText("🔒")
+            self.toggle_key_btn.setText("Hide")
         else:
             self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-            self.toggle_key_btn.setText("👁")
+            self.toggle_key_btn.setText("Show")
 
     def _on_api_key_changed(self, text: str):
         """Handle API key changes."""
@@ -633,7 +891,7 @@ class SettingsDialog(QDialog):
         if api_key and len(api_key) > 5:
             self._fetch_models(api_key)
 
-    def _on_models_fetched(self, models: List[ModelInfo]):
+    def _on_models_fetched(self, models: list[ModelInfo]):
         """Handle successful model fetch."""
         self.models_loading.setVisible(False)
         self.refresh_models_btn.setEnabled(True)
@@ -707,12 +965,19 @@ class SettingsDialog(QDialog):
         self.selected_model_label.setText(model)
 
         # Local LLM
-        local_llm = config.get("local_llm", {})
-        self.local_llm_enable_cb.setChecked(local_llm.get("enabled", False))
-        self.local_llm_url_input.setText(local_llm.get("base_url", "http://localhost:8000/v1"))
-        self.local_llm_model_input.setText(local_llm.get("model_name", "local-model"))
-        self.local_llm_key_input.setText(local_llm.get("api_key", ""))
-        self.local_llm_timeout_spin.setValue(local_llm.get("timeout", 300))
+        local_llm = config.get("local_llm", None)
+        if local_llm is not None:
+            self.local_llm_enable_cb.setChecked(local_llm.enabled)
+            self.local_llm_url_input.setText(local_llm.base_url or "http://localhost:8000/v1")
+            self.local_llm_model_input.setText(local_llm.model_name or "local-model")
+            self.local_llm_key_input.setText(local_llm.api_key or "")
+            self.local_llm_timeout_spin.setValue(local_llm.timeout or 300)
+        else:
+            self.local_llm_enable_cb.setChecked(False)
+            self.local_llm_url_input.setText("http://localhost:8000/v1")
+            self.local_llm_model_input.setText("local-model")
+            self.local_llm_key_input.setText("")
+            self.local_llm_timeout_spin.setValue(300)
 
         # STT
         lang = config.get("stt.language", "auto")
@@ -720,11 +985,6 @@ class SettingsDialog(QDialog):
         index = self.lang_combo.findText(lang_text)
         if index >= 0:
             self.lang_combo.setCurrentIndex(index)
-
-        size = config.get("stt.model_size", "small")
-        index = self.size_combo.findText(size)
-        if index >= 0:
-            self.size_combo.setCurrentIndex(index)
 
         # Diarization
         self.diarization_check.setChecked(config.get("diarization.enabled", True))
@@ -736,6 +996,11 @@ class SettingsDialog(QDialog):
             self.qwen_size_combo.setCurrentIndex(index)
 
         self.qwen_autodownload_check.setChecked(config.get("qwen_asr.auto_download", True))
+
+        # Knowledge Base / RAG - load documents
+        if RAG_AVAILABLE:
+            self._rag_manager = None
+            self._refresh_document_list()
 
     def _get_lang_name(self, code: str) -> str:
         """Get language name from code."""
@@ -750,11 +1015,12 @@ class SettingsDialog(QDialog):
         }
         return names.get(code, code)
 
-    def _download_qwen_model(self, model_size: Optional[str] = None):
+    def _download_qwen_model(self, model_size: str | None = None):
         """Open dialog to download Qwen3-ASR model(s)."""
-        from PySide6.QtWidgets import QMessageBox
         import subprocess
         import sys
+
+        from PySide6.QtWidgets import QMessageBox
 
         if model_size is None:
             model_size = self.qwen_size_combo.currentData()
@@ -780,7 +1046,7 @@ class SettingsDialog(QDialog):
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                script_path = Path(__file__).parent.parent / "scripts" / "download_models.py"
+                script_path = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
                 model_arg = model_size or self.qwen_size_combo.currentData()
                 result = subprocess.run(
                     [sys.executable, str(script_path), "--model-size", model_arg],
@@ -791,7 +1057,7 @@ class SettingsDialog(QDialog):
 
                 if result.returncode == 0:
                     msg = (
-                        f"Model downloaded successfully!"
+                        "Model downloaded successfully!"
                         if model_size != "all"
                         else "Both models downloaded successfully!"
                     )
@@ -818,25 +1084,79 @@ class SettingsDialog(QDialog):
             config.set("openrouter.model", "anthropic/claude-3.5-sonnet")
 
         # Local LLM
-        local_llm = config.get("local_llm", {})
-        local_llm["enabled"] = self.local_llm_enable_cb.isChecked()
-        local_llm["base_url"] = self.local_llm_url_input.text().strip()
-        local_llm["model_name"] = self.local_llm_model_input.text().strip()
-        local_llm["api_key"] = self.local_llm_key_input.text().strip()
-        local_llm["timeout"] = self.local_llm_timeout_spin.value()
-        config.set("local_llm", local_llm)
+        config.set("local_llm.enabled", self.local_llm_enable_cb.isChecked())
+        config.set("local_llm.base_url", self.local_llm_url_input.text().strip())
+        config.set("local_llm.model_name", self.local_llm_model_input.text().strip())
+        config.set("local_llm.api_key", self.local_llm_key_input.text().strip())
+        config.set("local_llm.timeout", self.local_llm_timeout_spin.value())
 
         # STT
         lang_text = self.lang_combo.currentText()
         lang = lang_text.split()[0]
         config.set("stt.language", lang)
-        config.set("stt.model_size", self.size_combo.currentText())
 
         # Diarization
         config.set("diarization.enabled", self.diarization_check.isChecked())
 
         # Qwen3-ASR
-        config.set("qwen_asr.model_size", self.qwen_size_combo.currentData())
+        old_qwen_size = config.get("qwen_asr.model_size", "1.7B")
+        new_qwen_size = self.qwen_size_combo.currentData()
+        config.set("qwen_asr.model_size", new_qwen_size)
         config.set("qwen_asr.auto_download", self.qwen_autodownload_check.isChecked())
 
+        # Hot-reload ASR if the user changed the model size, otherwise the
+        # app would keep using the previously-loaded model until restart.
+        if new_qwen_size != old_qwen_size:
+            self._reload_asr_model(new_qwen_size)
+
         self.accept()
+
+    def _reload_asr_model(self, new_size: str) -> None:
+        """Ask MainWindow's TranscriptionManager to swap to ``new_size``.
+
+        Shows a modal progress dialog while the new model loads (10-30 s).
+        """
+        from PySide6.QtCore import QCoreApplication, Qt
+        from PySide6.QtWidgets import QMessageBox, QProgressDialog
+
+        main_window = self.parent()
+        manager = getattr(main_window, "transcription_manager", None)
+        if manager is None or not hasattr(manager, "reload_model"):
+            # Fallback: notify user to restart.
+            QMessageBox.information(
+                self,
+                "Restart required",
+                f"Model size changed to {new_size}. Please restart the app to apply.",
+            )
+            return
+
+        progress = QProgressDialog(
+            f"Loading Qwen3-ASR-{new_size}...\nThis may take up to 30 seconds.",
+            "",  # empty label hides the cancel button; load is not cancellable
+            0,
+            0,
+            self,
+        )
+        progress.setCancelButton(None)  # belt-and-braces
+        progress.setWindowTitle("Switching ASR model")
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QCoreApplication.processEvents()
+
+        try:
+            ok = manager.reload_model(new_size)
+        finally:
+            progress.close()
+
+        if not ok:
+            QMessageBox.critical(
+                self,
+                "Model load failed",
+                (
+                    f"Failed to load Qwen3-ASR-{new_size}.\n\n"
+                    "The model may not be cached locally and no internet is "
+                    "available. Try the 'Download' button in this dialog, "
+                    "or switch back to a cached model size."
+                ),
+            )

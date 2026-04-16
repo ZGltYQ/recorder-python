@@ -1,47 +1,40 @@
 """Modern UI for Audio Recorder with improved styling."""
 
-from typing import Optional
+import re
+import uuid
+
+import numpy as np
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
     QComboBox,
-    QTextEdit,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
+    QMainWindow,
     QMessageBox,
-    QFileDialog,
-    QSplitter,
-    QFrame,
-    QDialog,
-    QLineEdit,
-    QGroupBox,
-    QStatusBar,
-    QToolBar,
-    QApplication,
+    QPushButton,
     QSizePolicy,
-    QSpacerItem,
-    QScrollArea,
-    QStackedWidget,
+    QSplitter,
+    QStatusBar,
+    QTextEdit,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import QSize, Signal
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QFont, QColor, QPalette
-import numpy as np
 
-from ..utils.logger import get_logger
-from ..utils.config import get_config
-from ..audio.capture import AudioCapture, AudioSource, SourceType
+from ..ai.openrouter import AISuggestionGenerator, NotConfiguredError
+from ..ai.priority_queue import get_priority_queue
+from ..audio.capture import AudioCapture
+from ..database.manager import get_database
+from ..rag import EmbeddingWorker
 from ..speech.asr import TranscriptionManager, TranscriptionResult
 from ..speech.diarization import SpeakerDiarization
-from ..database.manager import get_database
-from ..ai.openrouter import AISuggestionGenerator
-from ..ai.priority_queue import get_priority_queue
-from ..rag import RAGManager, DocumentChunker, EmbeddingWorker, RAGSearch
-from ..screenshot import ScreenshotCapture, ScreenshotStorage, ScreenshotAnalyzer
+from ..utils.config import get_config
+from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -393,7 +386,7 @@ class TranscriptionWidget(QTextEdit):
         self.color_index = 0
 
     def add_message(
-        self, message_id: str, text: str, speaker: Optional[str] = None, is_final: bool = True
+        self, message_id: str, text: str, speaker: str | None = None, is_final: bool = True
     ):
         if speaker and speaker not in self.speaker_colors:
             self.speaker_colors[speaker] = SPEAKER_COLORS[self.color_index % len(SPEAKER_COLORS)]
@@ -490,7 +483,88 @@ class AISuggestionsWidget(QListWidget):
         self.setItemWidget(item, widget)
         self.scrollToBottom()
 
-    def clear_suggestions(self):
+    def add_summary(self, text: str) -> None:
+        """Add a summary card with indigo header, plain-text body, and a close button."""
+        item = QListWidgetItem()
+        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header: indigo band
+        header = QFrame()
+        header.setStyleSheet(
+            f"QFrame {{ background-color: {COLORS['primary']}; "
+            f"border-top-left-radius: 8px; border-top-right-radius: 8px; }}"
+        )
+        hlayout = QHBoxLayout(header)
+        hlayout.setContentsMargins(12, 8, 8, 8)
+        hlayout.setSpacing(8)
+        hlabel = QLabel(
+            "<span style='color: white; font-weight: 700; font-size: 13px;'>Summary</span>"
+        )
+        hlabel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        hlayout.addWidget(hlabel)
+        xbtn = QPushButton("X")
+        xbtn.setFixedSize(36, 36)
+        xbtn.setCursor(Qt.PointingHandCursor)
+        xbtn.setToolTip("Close summary")
+        xbtn.setStyleSheet(
+            "QPushButton { background-color: #ef4444; color: white; font-size: 16px; "
+            "font-weight: 900; border: 2px solid rgba(255,255,255,0.4); border-radius: 8px; padding: 0; } "
+            "QPushButton:hover { background-color: #dc2626; border-color: white; } "
+            "QPushButton:pressed { background-color: #b91c1c; }"
+        )
+        xbtn.clicked.connect(lambda: self._remove_summary_item(item))
+        hlayout.addWidget(xbtn)
+
+        # Body: dark surface, rounded bottom corners
+        body = QFrame()
+        body.setStyleSheet(
+            f"QFrame {{ background-color: {COLORS['surface']}; "
+            f"border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }}"
+        )
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(12, 12, 12, 12)
+        body_layout.setSpacing(6)
+        div = QFrame()
+        div.setFrameShape(QFrame.HLine)
+        div.setStyleSheet(f"border: none; border-top: 1px solid {COLORS['border']};")
+        body_layout.addWidget(div)
+        body_label = QLabel(text)
+        body_label.setTextFormat(Qt.TextFormat.PlainText)
+        body_label.setWordWrap(True)
+        body_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        body_layout.addWidget(body_label)
+
+        layout.addWidget(header)
+        layout.addWidget(body)
+        widget.setStyleSheet(
+            f"QWidget {{ background-color: {COLORS['border']}; border-radius: 8px; }}"
+        )
+        item.setSizeHint(widget.sizeHint() + QSize(0, 20))
+        self.addItem(item)
+        self.setItemWidget(item, widget)
+        self.scrollToBottom()
+
+    def _remove_summary_item(self, item: QListWidgetItem) -> None:
+        """Remove a summary item when its close button is clicked."""
+        try:
+            row = self.row(item)
+            if row < 0:
+                return
+            taken = self.takeItem(row)
+            if taken:
+                w = self.itemWidget(taken)
+                if w:
+                    w.deleteLater()
+                logger.debug("summary_card_removed", row=row)
+        except Exception as e:
+            logger.error("Failed to remove summary item", error=str(e))
+
+    def clear_suggestions(self) -> None:
         self.clear()
 
 
@@ -656,34 +730,15 @@ class MainWindow(QMainWindow):
         self._current_provider = config.get("provider", "openrouter")
         self.ai_generator = AISuggestionGenerator(provider=self._current_provider)
 
-        # Initialize RAG components
-        self.rag_manager = RAGManager()
-        self.chunker = DocumentChunker()
-        self.rag_search = RAGSearch(self.rag_manager, self.ai_generator)
-        self._embedding_worker = None
-        self._current_document_id = None
-
         # Priority queue for AI responses
         self.priority_queue = get_priority_queue()
         self.priority_queue.response_ready.connect(self._on_ai_response_ready)
         self.priority_queue.queue_depth_changed.connect(self._on_queue_depth_changed)
         self.priority_queue.start()
 
-        # Screenshot capture components
-        config = get_config()
-        screenshot_interval = config.get("screenshot.interval", 30)
-        screenshot_max_count = config.get("screenshot.max_count", 50)
-        self.screenshot_storage = ScreenshotStorage(max_count=screenshot_max_count)
-        self.screenshot_capture = ScreenshotCapture()
-        self.screenshot_capture.screenshot_ready.connect(self._on_screenshot_ready)
-
-        # Screenshot analyzer
-        self.screenshot_analyzer = ScreenshotAnalyzer(ai_generator=self.ai_generator)
-        self.screenshot_analyzer.tasks_found.connect(self._on_screenshot_tasks_found)
-        self.screenshot_analyzer.error.connect(self.on_error)
-
-        self.current_session_id: Optional[str] = None
+        self.current_session_id: str | None = None
         self._pending_questions: dict = {}
+        self._dispatched_segments: dict = {}
         self.is_recording = False
 
         self.setup_ui()
@@ -746,80 +801,6 @@ class MainWindow(QMainWindow):
         suggestions_subheader.setObjectName("subheaderLabel")
         suggestions_layout.addWidget(suggestions_subheader)
 
-        # Provider selector
-        provider_layout = QHBoxLayout()
-        provider_label = QLabel("AI Provider:")
-        provider_label.setStyleSheet("color: #94a3b8;")
-        self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["OpenRouter", "Local"])
-        self.provider_combo.setCurrentText(
-            "OpenRouter" if self._current_provider == "openrouter" else "Local"
-        )
-        self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
-        self.provider_combo.setStyleSheet("""
-            QComboBox {
-                background-color: #1e293b;
-                color: #e2e8f0;
-                border: 1px solid #334155;
-                border-radius: 4px;
-                padding: 4px 8px;
-                min-width: 100px;
-            }
-            QComboBox:focus { border: 1px solid #3b82f6; }
-            QComboBox::drop-down { border: none; }
-        """)
-        provider_layout.addWidget(provider_label)
-        provider_layout.addWidget(self.provider_combo)
-        provider_layout.addStretch()
-        suggestions_layout.addLayout(provider_layout)
-
-        # RAG Document section
-        rag_label = QLabel("📚 Knowledge Base")
-        rag_label.setStyleSheet(f"font-weight: 600; color: {COLORS['text']}; padding-top: 12px;")
-        suggestions_layout.addWidget(rag_label)
-
-        # Document drop zone
-        self.doc_drop_zone = DocumentDropZone()
-        suggestions_layout.addWidget(self.doc_drop_zone)
-
-        # Upload button row
-        upload_layout = QHBoxLayout()
-        self.btn_upload_doc = QPushButton("Upload Document")
-        self.btn_upload_doc.setFixedHeight(32)
-        self.btn_upload_doc.clicked.connect(self.on_upload_document)
-        upload_layout.addWidget(self.btn_upload_doc)
-        upload_layout.addStretch()
-        suggestions_layout.addLayout(upload_layout)
-
-        # Document list
-        self.doc_list_widget = DocumentListWidget()
-        suggestions_layout.addWidget(self.doc_list_widget)
-
-        # RAG search button
-        self.btn_rag_search = QPushButton("🔍 Search Knowledge Base")
-        self.btn_rag_search.setFixedHeight(36)
-        self.btn_rag_search.setEnabled(False)  # Disabled until documents are uploaded
-        self.btn_rag_search.clicked.connect(self.on_rag_search_clicked)
-        suggestions_layout.addWidget(self.btn_rag_search)
-
-        # Progress bar for indexing
-        self.rag_progress = QLabel("")
-        self.rag_progress.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
-        suggestions_layout.addWidget(self.rag_progress)
-
-        suggestions_layout.addSpacing(12)
-
-        # Screenshot Tasks section
-        screenshot_label = QLabel("📸 Screenshot Tasks")
-        screenshot_label.setStyleSheet(
-            f"font-weight: 600; color: {COLORS['text']}; padding-top: 12px;"
-        )
-        suggestions_layout.addWidget(screenshot_label)
-
-        screenshot_subheader = QLabel("Tasks detected from screen captures")
-        screenshot_subheader.setObjectName("subheaderLabel")
-        suggestions_layout.addWidget(screenshot_subheader)
-
         # AI Suggestions section
         ai_label = QLabel("💡 AI Suggestions")
         ai_label.setStyleSheet(f"font-weight: 600; color: {COLORS['text']}; padding-top: 12px;")
@@ -876,15 +857,6 @@ class MainWindow(QMainWindow):
         # Diarization
         self.diarization.speaker_updated.connect(self.on_diarization_speaker)
         self.diarization.error.connect(self.on_error)
-
-        # RAG - Document upload
-        self.doc_drop_zone.document_dropped.connect(self.on_document_dropped)
-        self.doc_list_widget.delete_requested.connect(self.on_document_delete)
-
-        # RAG - Manager signals
-        self.rag_manager.indexing_progress.connect(self.on_indexing_progress)
-        self.rag_manager.indexing_complete.connect(self.on_indexing_complete)
-        self.rag_manager.error.connect(self.on_error)
 
     def initialize(self):
         """Initialize the application."""
@@ -998,18 +970,64 @@ class MainWindow(QMainWindow):
         self.transcription_manager.process_audio(data)
         self.diarization.add_audio(data)
 
+    # Matches complete sentences (ending in . ! ?) inside interim transcriptions.
+    _SENTENCE_RE = re.compile(r"[^.!?]+[.!?]+")
+
+    @staticmethod
+    def _extract_complete_sentences(text: str) -> list[str]:
+        """Return the list of complete sentences in ``text``."""
+        return [m.group(0).strip() for m in MainWindow._SENTENCE_RE.finditer(text)]
+
+    @staticmethod
+    def _normalize_sentence(s: str) -> str:
+        """Normalize a sentence for duplicate detection."""
+        return re.sub(r"\W+", " ", s).strip().lower()
+
+    def _maybe_dispatch_complete_questions(self, segment_id: str, text: str) -> None:
+        """Scan ``text`` for completed question sentences and dispatch any new ones."""
+        if not self.current_session_id:
+            return
+        dispatched = self._dispatched_segments.setdefault(segment_id, set())
+        for sentence in self._extract_complete_sentences(text):
+            if len(sentence) < 10:
+                continue
+            key = self._normalize_sentence(sentence)
+            if key in dispatched:
+                continue
+            if not self.ai_generator.is_question(sentence):
+                continue
+
+            dispatched.add(key)
+            question_id = str(uuid.uuid4())
+            self._pending_questions[question_id] = sentence
+            self.last_transcription = sentence
+
+            logger.info(
+                "dispatched_question_early",
+                segment_id=segment_id[:8],
+                question_id=question_id[:8],
+                preview=sentence[:60],
+            )
+            self.priority_queue.enqueue_question(sentence, question_id)
+
     def on_transcription(self, result: TranscriptionResult):
-        """Handle transcription result."""
+        """Handle transcription result (interim OR final)."""
         self.transcription_widget.add_message(
             result.message_id or "unknown", result.text, result.speaker, result.is_final
         )
 
-        if result.is_final and result.message_id:
+        if not result.message_id:
+            return
+
+        # Early dispatch: fire the LLM as soon as a complete question sentence
+        # exists inside the interim text. Deduplicated per segment.
+        self._maybe_dispatch_complete_questions(result.message_id, result.text)
+
+        if result.is_final:
             import time
 
             start_time = time.time()
             end_time = start_time + len(result.text.split()) * 0.5
-
             self.diarization.track_message(result.message_id, start_time, end_time, result.text)
 
             if self.current_session_id:
@@ -1018,22 +1036,26 @@ class MainWindow(QMainWindow):
                     self.current_session_id, result.text, result.speaker, result.message_id
                 )
 
-                if self.ai_generator.is_question(result.text):
-                    # Store as last transcription for RAG search
-                    self.last_transcription = result.text
+                # Safety net: if Qwen only puts a terminator on the final,
+                # the early path would have missed this question.
+                self._maybe_dispatch_complete_questions(result.message_id, result.text)
 
-                    # Check if documents exist for automatic RAG search
-                    docs = self.rag_manager.list_documents()
-                    if docs:
-                        # Automatic RAG search on question detection (D-04: hybrid approach)
-                        import asyncio
+                # Backwards-compat: if no terminator anywhere, treat whole
+                # utterance as a potential question (old behaviour).
+                if not self._extract_complete_sentences(
+                    result.text
+                ) and self.ai_generator.is_question(result.text):
+                    dispatched = self._dispatched_segments.setdefault(result.message_id, set())
+                    key = self._normalize_sentence(result.text)
+                    if key not in dispatched:
+                        dispatched.add(key)
+                        question_id = str(uuid.uuid4())
+                        self._pending_questions[question_id] = result.text
+                        self.last_transcription = result.text
+                        self.priority_queue.enqueue_question(result.text, question_id)
 
-                        asyncio.create_task(self._run_rag_search(result.text))
-
-                    # Track pending question
-                    self._pending_questions[result.message_id] = result.text
-                    # Enqueue to priority queue
-                    self.priority_queue.enqueue_question(result.text, result.message_id)
+            # Segment closed -- drop tracking so memory doesn't grow unbounded.
+            self._dispatched_segments.pop(result.message_id, None)
 
     def on_speaker_updated(self, message_id: str, speaker: str):
         """Handle speaker update from transcription."""
@@ -1062,18 +1084,6 @@ class MainWindow(QMainWindow):
         """Update queue depth display."""
         self.status_bar.showMessage(f"Queue: Priority={priority_count} | Normal={normal_count}")
 
-    def _on_provider_changed(self, text: str):
-        """Handle AI provider change."""
-        new_provider = "openrouter" if text == "OpenRouter" else "local"
-        if new_provider != self._current_provider:
-            self._current_provider = new_provider
-            self.ai_generator.set_provider(new_provider)
-            # Save provider preference
-            config = get_config()
-            config.set("provider", new_provider)
-            self.status_bar.showMessage(f"AI Provider: {text}", 3000)
-            logger.info("Provider changed", provider=new_provider)
-
     def summarize_conversation(self):
         """Summarize the current conversation."""
         if not self.current_session_id:
@@ -1089,17 +1099,75 @@ class MainWindow(QMainWindow):
 
         message_dicts = [{"speaker": m.speaker, "text": m.text} for m in messages]
 
-        import threading
+        # Show loading state on the button
+        btn = self.control_panel.summarize_btn
+        btn.setEnabled(False)
+        btn.setText("Generating...")
+        btn.setStyleSheet(
+            f"QPushButton {{ background-color: {COLORS['surface']}; "
+            f"color: {COLORS['text_secondary']}; border: 1px solid {COLORS['border']}; "
+            f"border-radius: 8px; padding: 10px 20px; font-weight: 500; }}"
+        )
+
+        # Cancel any previous timeout timer
+        if hasattr(self, "_summary_timeout_timer") and self._summary_timeout_timer is not None:
+            self._summary_timeout_timer.stop()
+
+        SUMMARY_TIMEOUT_MS = 90_000
+
+        def restore():
+            if getattr(self, "_summary_timeout_timer", None):
+                self._summary_timeout_timer.stop()
+                self._summary_timeout_timer = None
+            btn.setText("Summarize")
+            btn.setStyleSheet("")
+            btn.setEnabled(True)
+
+        def on_summary_timeout():
+            logger.warning("summarize_conversation timed out after 90 s")
+            QMessageBox.warning(
+                self,
+                "Summary Timeout",
+                "The AI did not respond in time. Check your connection and API key.",
+            )
+            restore()
+
+        self._summary_timeout_timer = QTimer()
+        self._summary_timeout_timer.setSingleShot(True)
+        self._summary_timeout_timer.timeout.connect(on_summary_timeout)
+        self._summary_timeout_timer.start(SUMMARY_TIMEOUT_MS)
 
         def generate():
             try:
                 summary = self.ai_generator.summarize_conversation_sync(message_dicts)
                 if summary:
-                    self.suggestions_widget.add_suggestion("Conversation Summary", summary)
+                    QTimer.singleShot(0, lambda: self.suggestions_widget.add_summary(summary))
+            except NotConfiguredError as e:
+                logger.error("summarize_conversation: not configured", error=str(e))
+                QTimer.singleShot(
+                    0,
+                    lambda: QMessageBox.warning(
+                        self,
+                        "API Key Not Set",
+                        "OpenRouter API key is not configured. Go to Settings > AI Provider tab.",
+                    ),
+                )
             except Exception as e:
                 logger.error("Failed to generate summary", error=str(e))
+                QTimer.singleShot(
+                    0,
+                    lambda: QMessageBox.warning(
+                        self,
+                        "Summary Failed",
+                        "Failed to generate summary:\n" + str(e),
+                    ),
+                )
+            finally:
+                QTimer.singleShot(0, restore)
 
-        thread = threading.Thread(target=generate)
+        import threading
+
+        thread = threading.Thread(target=generate, daemon=True)
         thread.start()
 
     def export_conversation(self):
@@ -1428,11 +1496,8 @@ class MainWindow(QMainWindow):
         if self.is_recording:
             self.stop_recording()
 
-        # Stop screenshot capture if enabled
-        if self.screenshot_capture.is_enabled():
-            self.screenshot_capture.stop()
-
         self.priority_queue.stop()
+        self.ai_generator._stop_worker()
 
         db = get_database()
         db.close()

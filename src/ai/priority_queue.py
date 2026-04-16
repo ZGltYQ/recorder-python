@@ -3,6 +3,7 @@
 import asyncio
 import time
 import uuid
+import threading
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 from PySide6.QtCore import QObject, Signal, QTimer
@@ -66,19 +67,28 @@ class PriorityQueueManager(QObject):
     def __init__(self):
         super().__init__()
         self.config = get_config()
-        pq_config = self.config.get("priority_queue", {})
+        pq_config = self.config.get("priority_queue", None)
 
-        self.enabled = pq_config.get("enabled", True)
-        self.aging_interval = pq_config.get("aging_interval", 30)
-        self.aging_factor = pq_config.get("aging_factor", 0.5)
-        self.max_age = pq_config.get("max_age", 10)
-        self.max_concurrent = pq_config.get("max_concurrent", 2)
+        if pq_config is not None:
+            self.enabled = pq_config.enabled
+            self.aging_interval = pq_config.aging_interval
+            self.aging_factor = pq_config.aging_factor
+            self.max_age = pq_config.max_age
+            self.max_concurrent = pq_config.max_concurrent
+        else:
+            self.enabled = True
+            self.aging_interval = 30
+            self.aging_factor = 0.5
+            self.max_age = 10
+            self.max_concurrent = 2
 
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._active_tasks: int = 0
         self._running: bool = False
         self._worker_task: Optional[asyncio.Task] = None
         self._aging_timer: Optional[QTimer] = None
+        self._asyncio_thread: Optional[threading.Thread] = None
+        self._asyncio_loop: Optional[asyncio.AbstractEventLoop] = None
 
         self.ai_generator = AISuggestionGenerator()
         self.question_detector = QuestionDetector()
@@ -93,8 +103,16 @@ class PriorityQueueManager(QObject):
             logger.info("Priority queue disabled")
             return
 
+        if self._running:
+            logger.warning("Priority queue already running")
+            return
+
         self._running = True
-        self._worker_task = asyncio.create_task(self._process_queue())
+
+        # Run asyncio coroutine in a background thread with its own event loop
+        self._asyncio_loop = asyncio.new_event_loop()
+        self._asyncio_thread = threading.Thread(target=self._run_asyncio_loop, daemon=True)
+        self._asyncio_thread.start()
 
         # Start aging timer (Qt timer for GUI thread safety)
         self._aging_timer = QTimer()
@@ -102,6 +120,17 @@ class PriorityQueueManager(QObject):
         self._aging_timer.start(self.aging_interval * 1000)
 
         logger.info("Priority queue manager started")
+
+    def _run_asyncio_loop(self) -> None:
+        """Run the asyncio event loop in a background thread."""
+        asyncio.set_event_loop(self._asyncio_loop)
+        try:
+            self._asyncio_loop.run_until_complete(self._process_queue())
+        except RuntimeError as e:
+            if "Event loop stopped" not in str(e):
+                raise
+        finally:
+            self._asyncio_loop.close()
 
     def stop(self) -> None:
         """Stop the priority queue processing."""
@@ -111,9 +140,14 @@ class PriorityQueueManager(QObject):
             self._aging_timer.stop()
             self._aging_timer = None
 
-        if self._worker_task:
-            self._worker_task.cancel()
-            self._worker_task = None
+        # Stop asyncio loop
+        if self._asyncio_loop and self._asyncio_thread:
+            self._asyncio_loop.call_soon_threadsafe(self._asyncio_loop.stop)
+            self._asyncio_thread.join(timeout=2.0)
+            if not self._asyncio_loop.is_closed():
+                self._asyncio_loop.close()
+            self._asyncio_loop = None
+            self._asyncio_thread = None
 
         logger.info("Priority queue manager stopped")
 
