@@ -13,6 +13,12 @@ torch>=2.1.0
 torchaudio>=2.1.0
 accelerate>=0.25.0
 
+# Speech Recognition (faster-whisper backend, optional)
+# Provides the "faster-whisper" option in Settings → Backend. Pulls in
+# ctranslate2 (native wheels ~60 MB). Skip with --no-deps if you only
+# want Qwen3-ASR.
+faster-whisper>=1.1.0
+
 # Speaker Diarization
 resemblyzer>=0.1.1
 scikit-learn>=1.3.0

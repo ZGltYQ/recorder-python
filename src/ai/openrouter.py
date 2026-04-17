@@ -1,6 +1,7 @@
 """OpenRouter API integration for AI features."""
 
 import asyncio
+import re
 import threading
 from collections.abc import Coroutine
 from dataclasses import dataclass
@@ -237,49 +238,174 @@ class OpenRouterClient:
 
 
 class QuestionDetector:
-    """Detects if text is a question."""
+    """Detects whether a string of transcribed text is a question.
 
-    QUESTION_WORDS = [
-        "what",
-        "why",
-        "how",
-        "when",
-        "where",
-        "who",
-        "which",
-        "can",
-        "could",
-        "would",
-        "should",
-        "is",
-        "are",
-        "do",
-        "does",
-        "did",
-        "will",
-        "shall",
-        "may",
-        "might",
-        "am",
-    ]
+    Supports English, Russian, and Ukrainian -- the three languages that
+    STTConfig currently exposes. The detector does NOT rely solely on a
+    trailing ``?`` because Qwen3-ASR punctuation is unreliable on interim
+    results (and on Russian/Ukrainian regardless).
+
+    Rules, in order of strength:
+
+    1. Trailing ``?`` -> question. Always.
+    2. First token is a WH-word / interrogative pronoun in any supported
+       language -> question. These rarely appear outside questions.
+    3. First token is an English auxiliary (``is/are/do/does/...``) -> only
+       counts when the text also ends with ``?``. ``"Is this real?"`` is a
+       question; ``"Is what I said."`` is not.
+    4. Russian yes-no particle ``ли`` appears as the second token
+       (``Знает ли он?”``, ``Ты ли это?``) -> question.
+    5. Ukrainian yes-no particle ``чи`` appears as the first token
+       (``Чи ти тут?``) -> question.
+
+    Bare interrogative words (``почему``, ``what``, etc.) can appear in
+    relative clauses (``То, почему я спрашиваю, ...`` / ``I know what he
+    said``). A stronger gate would require a parser; we accept the rare false
+    positive in exchange for catching most real questions without one.
+    """
+
+    # WH-words / interrogatives. First-token match alone is strong enough.
+    WH_WORDS = frozenset(
+        {
+            # English
+            "what",
+            "why",
+            "how",
+            "when",
+            "where",
+            "who",
+            "whom",
+            "whose",
+            "which",
+            # Russian (lowercased, stripped of punctuation)
+            "что",
+            "чего",
+            "чему",
+            "чем",
+            "как",
+            "какой",
+            "какая",
+            "какое",
+            "какие",
+            "какую",
+            "каким",
+            "каких",
+            "когда",
+            "где",
+            "куда",
+            "откуда",
+            "почему",
+            "зачем",
+            "кто",
+            "кого",
+            "кому",
+            "кем",
+            "сколько",
+            "чей",
+            "чья",
+            "чье",
+            "чьи",
+            "разве",
+            "неужели",
+            # Ukrainian
+            "що",
+            "чому",
+            "навіщо",
+            "як",
+            "який",
+            "яка",
+            "яке",
+            "які",
+            "коли",
+            "де",
+            "куди",
+            "звідки",
+            "хто",
+            "скільки",
+            "чий",
+            "чия",
+            "чиє",
+            "чиї",
+            "хіба",
+            "невже",
+        }
+    )
+
+    # English auxiliaries. These need the text to actually end with ``?`` --
+    # they're too common in declaratives / exclamations otherwise.
+    EN_AUX_WORDS = frozenset(
+        {
+            "is",
+            "are",
+            "was",
+            "were",
+            "do",
+            "does",
+            "did",
+            "can",
+            "could",
+            "would",
+            "should",
+            "will",
+            "shall",
+            "may",
+            "might",
+            "must",
+            "am",
+            "have",
+            "has",
+            "had",
+        }
+    )
+
+    # Strip leading/trailing non-word chars when picking the first token.
+    # Keeps Cyrillic intact (\w matches them under re.UNICODE, the default
+    # in Python 3).
+    _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
     def __init__(self):
         pass
 
     def is_question(self, text: str) -> bool:
-        """Check if text is a question."""
-        text_lower = text.lower().strip()
+        """Return True if ``text`` looks like a question."""
+        if not text:
+            return False
 
-        # Check for question mark
-        if text.endswith("?"):
+        stripped = text.strip()
+        if not stripped:
+            return False
+
+        ends_with_qmark = stripped.endswith("?")
+        if ends_with_qmark:
             return True
 
-        # Check for question words at start
-        words = text_lower.split()
-        if words and words[0] in self.QUESTION_WORDS:
+        # Tokenize using a word-boundary regex so Cyrillic, diacritics, and
+        # punctuation are handled uniformly. `str.split()` would leave
+        # attached quotes/dashes as part of the first token.
+        tokens = [m.group(0).lower() for m in self._TOKEN_RE.finditer(stripped)]
+        if not tokens:
+            return False
+
+        first = tokens[0]
+
+        # Strong signal: starts with a WH-word / interrogative pronoun.
+        if first in self.WH_WORDS:
             return True
 
-        return False
+        # English auxiliary-inversion questions (``Are you there?``) require
+        # an actual ``?`` -- caught by the first branch above. If we reach
+        # here with an aux-word and no ``?``, it's almost certainly a
+        # declarative (``Is this the way it goes.``) or exclamation.
+        # (Kept here as documentation -- we intentionally do NOT return True.)
+
+        # Russian yes-no particle ``ли`` almost always appears as the
+        # second token: ``Знает ли он?``, ``Можно ли спросить``.
+        if len(tokens) >= 2 and tokens[1] == "ли":
+            return True
+
+        # Ukrainian yes-no particle ``чи`` at the start: ``Чи відомо вам``.
+        # Russian ``что`` already handled by WH_WORDS above.
+        return first == "чи"
 
 
 class NotConfiguredError(Exception):
@@ -301,19 +427,29 @@ class AISuggestionGenerator:
         self._stop_event = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_lock = threading.Lock()
+        self._wake_event: asyncio.Event | None = None
         self._worker_thread = threading.Thread(target=self._run_worker, daemon=True)
         self._worker_thread.start()
+        logger.info("ai_worker_started", provider=provider)
 
     def _run_worker(self) -> None:
         """Persistent worker thread with one event loop for warm httpx connection pools."""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        self._wake_event = asyncio.Event()
         self._loop.run_until_complete(self._idle_loop())
 
     async def _idle_loop(self) -> None:
-        """Wait for work until stop is requested."""
+        """Process scheduled work until stop is requested.
+
+        The loop continuously runs to process work submitted via
+        _run_sync/run_coroutine_threadsafe. The wake event is used as
+        a hint but does not block - we always loop to process pending tasks.
+        """
         while not self._stop_event.is_set():
-            await asyncio.sleep(0.5)
+            # Always yield to allow the event loop to process scheduled work
+            # from run_coroutine_threadsafe calls
+            await asyncio.sleep(0.01)
 
     def _stop_worker(self) -> None:
         """Signal the worker thread to stop."""
@@ -328,9 +464,15 @@ class AISuggestionGenerator:
         """Run a coroutine on the persistent worker thread and return the result."""
         with self._loop_lock:
             loop = self._loop
+            wake_event = self._wake_event
         if loop is None or not loop.is_running():
             raise RuntimeError("Worker loop not available")
+        if wake_event is None:
+            raise RuntimeError("Wake event not initialized")
+        logger.info("ai_request_scheduling", coro=str(coro)[:50])
         future = asyncio.run_coroutine_threadsafe(coro, loop)
+        loop.call_soon_threadsafe(wake_event.set)
+        logger.info("ai_request_scheduled", waiting_for_result=True)
         return future.result(timeout=120)
 
     def set_provider(self, provider: str) -> None:
@@ -402,16 +544,20 @@ class AISuggestionGenerator:
 
     async def summarize_conversation(self, messages: list[dict[str, str]]) -> str | None:
         """Generate a summary of the conversation."""
+        logger.info("summarize_conversation_started", msg_count=len(messages))
         if not self.client.is_configured():
+            logger.warning("summarize_conversation: client not configured")
             return None
 
         if not messages:
+            logger.info("summarize_conversation: no messages, returning early")
             return "No messages to summarize."
 
         # Build conversation text
         conversation_text = "\n".join(
             [f"{msg.get('speaker', 'Unknown')}: {msg.get('text', '')}" for msg in messages]
         )
+        logger.info("summarize_conversation_built_prompt", text_len=len(conversation_text))
 
         # Build messages in OpenAI-compatible format (dicts)
         messages_list = [
@@ -423,6 +569,7 @@ class AISuggestionGenerator:
             {"role": "user", "content": conversation_text},
         ]
 
+        logger.info("summarize_conversation_sending_request", provider=self.provider)
         try:
             if self.provider == "local":
                 response = await self.client.chat(messages_list)
@@ -431,8 +578,15 @@ class AISuggestionGenerator:
                 openrouter_messages = [
                     Message(role=m["role"], content=m["content"]) for m in messages_list
                 ]
+                logger.info(
+                    "summarize_conversation_calling_openrouter", msg_count=len(openrouter_messages)
+                )
                 response = await self.client.chat(openrouter_messages)
-            return response.content
+            logger.info(
+                "summarize_conversation_got_response",
+                content_len=len(response.content) if response else 0,
+            )
+            return response.content if response else None
         except Exception as e:
             logger.error("Failed to generate summary", error=str(e))
             return None

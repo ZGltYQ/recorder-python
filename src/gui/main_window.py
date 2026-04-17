@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStatusBar,
@@ -470,6 +471,43 @@ class AISuggestionsWidget(QListWidget):
         super().__init__(parent)
         self.setSpacing(8)
         self.setFrameShape(QFrame.NoFrame)
+        # Prevent horizontal scrollbar - word-wrap the content instead
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setResizeMode(QListWidget.Adjust)
+        self.setWordWrap(True)
+        # Disable built-in item hover/selection tint - the item widgets style themselves
+        self.setSelectionMode(QListWidget.NoSelection)
+        self.setStyleSheet(
+            "QListWidget { background: transparent; border: none; padding: 0; }"
+            "QListWidget::item { background: transparent; border: none; margin: 0; padding: 0; }"
+            "QListWidget::item:hover { background: transparent; }"
+            "QListWidget::item:selected { background: transparent; }"
+        )
+
+    def resizeEvent(self, event):
+        """Recompute item heights when the list is resized so wrapped text fits."""
+        super().resizeEvent(event)
+        self._recompute_item_sizes()
+
+    def _available_item_width(self) -> int:
+        """Width available for an item widget inside the viewport."""
+        return max(50, self.viewport().width() - 2 * self.spacing())
+
+    def _recompute_item_sizes(self) -> None:
+        """Ask each row's widget for its actual height at the current list width."""
+        w = self._available_item_width()
+        for i in range(self.count()):
+            item = self.item(i)
+            widget = self.itemWidget(item)
+            if widget is None:
+                continue
+            widget.setFixedWidth(w)
+            widget.adjustSize()
+            h = widget.sizeHint().height()
+            item.setSizeHint(QSize(w, h))
+            # Show scrollbar if needed
+            if self.verticalScrollBar().maximum() > 0:
+                self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
     def add_suggestion(self, question: str, response: str):
         item = QListWidgetItem()
@@ -506,75 +544,114 @@ class AISuggestionsWidget(QListWidget):
             }}
         """)
 
-        item.setSizeHint(widget.sizeHint() + QSize(0, 20))
         self.addItem(item)
         self.setItemWidget(item, widget)
+        # Size based on actual wrapped height at current list width
+        w = self._available_item_width()
+        widget.setFixedWidth(w)
+        widget.adjustSize()
+        item.setSizeHint(QSize(w, widget.sizeHint().height()))
         self.scrollToBottom()
 
     def add_summary(self, text: str) -> None:
-        """Add a summary card with indigo header, plain-text body, and a close button."""
+        """Add a flat summary card (header band + body text).
+
+        No nested scroll area and no hover outline: the enclosing QListWidget
+        scrolls vertically if the summary is taller than the viewport.
+        """
         item = QListWidgetItem()
         item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
 
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        # Outer card - single flat frame, no border, no hover
+        widget = QFrame()
+        widget.setObjectName("summaryCard")
+        widget.setStyleSheet(
+            f"#summaryCard {{"
+            f"  background-color: {COLORS['surface']};"
+            f"  border-radius: 8px;"
+            f"  border: none;"
+            f"}}"
+        )
+        outer_layout = QVBoxLayout(widget)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
-        # Header: indigo band
+        # Header band (indigo)
         header = QFrame()
+        header.setObjectName("summaryHeader")
+        header.setFixedHeight(40)
         header.setStyleSheet(
-            f"QFrame {{ background-color: {COLORS['primary']}; "
-            f"border-top-left-radius: 8px; border-top-right-radius: 8px; }}"
+            f"#summaryHeader {{"
+            f"  background-color: {COLORS['primary']};"
+            f"  border-top-left-radius: 8px;"
+            f"  border-top-right-radius: 8px;"
+            f"}}"
         )
         hlayout = QHBoxLayout(header)
-        hlayout.setContentsMargins(12, 8, 8, 8)
+        hlayout.setContentsMargins(14, 0, 8, 0)
         hlayout.setSpacing(8)
-        hlabel = QLabel(
-            "<span style='color: white; font-weight: 700; font-size: 13px;'>Summary</span>"
+
+        hlabel = QLabel("Summary")
+        hlabel.setStyleSheet(
+            "color: white; font-weight: 700; font-size: 13px; background: transparent;"
         )
         hlabel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        hlayout.addWidget(hlabel)
-        xbtn = QPushButton("X")
-        xbtn.setFixedSize(36, 36)
+        hlayout.addWidget(hlabel, 1, Qt.AlignVCenter)
+
+        xbtn = QPushButton("✕")
+        xbtn.setFixedSize(24, 24)
         xbtn.setCursor(Qt.PointingHandCursor)
         xbtn.setToolTip("Close summary")
         xbtn.setStyleSheet(
-            "QPushButton { background-color: #ef4444; color: white; font-size: 16px; "
-            "font-weight: 900; border: 2px solid rgba(255,255,255,0.4); border-radius: 8px; padding: 0; } "
-            "QPushButton:hover { background-color: #dc2626; border-color: white; } "
-            "QPushButton:pressed { background-color: #b91c1c; }"
+            "QPushButton {"
+            "  background-color: transparent;"
+            "  color: white;"
+            "  font-size: 12px;"
+            "  font-weight: 700;"
+            "  border: none;"
+            "  border-radius: 4px;"
+            "  padding: 0;"
+            "}"
+            "QPushButton:hover { background-color: rgba(255,255,255,0.18); }"
+            "QPushButton:pressed { background-color: rgba(255,255,255,0.08); }"
         )
         xbtn.clicked.connect(lambda: self._remove_summary_item(item))
-        hlayout.addWidget(xbtn)
+        hlayout.addWidget(xbtn, 0, Qt.AlignVCenter)
 
-        # Body: dark surface, rounded bottom corners
+        # Body (plain surface, no inner scroll, no divider line)
         body = QFrame()
+        body.setObjectName("summaryBody")
         body.setStyleSheet(
-            f"QFrame {{ background-color: {COLORS['surface']}; "
-            f"border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }}"
+            f"#summaryBody {{"
+            f"  background-color: {COLORS['surface']};"
+            f"  border-bottom-left-radius: 8px;"
+            f"  border-bottom-right-radius: 8px;"
+            f"}}"
         )
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(12, 12, 12, 12)
-        body_layout.setSpacing(6)
-        div = QFrame()
-        div.setFrameShape(QFrame.HLine)
-        div.setStyleSheet(f"border: none; border-top: 1px solid {COLORS['border']};")
-        body_layout.addWidget(div)
+        body_layout.setContentsMargins(16, 14, 16, 14)
+        body_layout.setSpacing(0)
+
         body_label = QLabel(text)
         body_label.setTextFormat(Qt.TextFormat.PlainText)
         body_label.setWordWrap(True)
+        body_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        body_label.setStyleSheet(
+            f"color: {COLORS['text']}; font-size: 13px; background: transparent;"
+        )
         body_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         body_layout.addWidget(body_label)
 
-        layout.addWidget(header)
-        layout.addWidget(body)
-        widget.setStyleSheet(
-            f"QWidget {{ background-color: {COLORS['border']}; border-radius: 8px; }}"
-        )
-        item.setSizeHint(widget.sizeHint() + QSize(0, 20))
+        outer_layout.addWidget(header)
+        outer_layout.addWidget(body, 1)
+
         self.addItem(item)
         self.setItemWidget(item, widget)
+        # Size based on wrapped height at current list width
+        w = self._available_item_width()
+        widget.setFixedWidth(w)
+        widget.adjustSize()
+        item.setSizeHint(QSize(w, widget.sizeHint().height()))
         self.scrollToBottom()
 
     def _remove_summary_item(self, item: QListWidgetItem) -> None:
@@ -739,6 +816,10 @@ class ControlPanel(QWidget):
 class MainWindow(QMainWindow):
     """Modern main application window."""
 
+    # Signals for thread-safe communication from background threads to GUI
+    summary_ready = Signal(str)  # summary text (empty string on no-summary)
+    summary_failed = Signal(str)  # error message
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Audio Recorder STT")
@@ -771,6 +852,11 @@ class MainWindow(QMainWindow):
 
         self.setup_ui()
         self.setup_connections()
+
+        # Connect summary signals to GUI-thread handlers (QueuedConnection by default across threads)
+        self.summary_ready.connect(self._on_summary_ready)
+        self.summary_failed.connect(self._on_summary_failed)
+
         self.initialize()
 
     def setup_ui(self):
@@ -828,11 +914,6 @@ class MainWindow(QMainWindow):
         suggestions_subheader = QLabel("Questions detected in conversation")
         suggestions_subheader.setObjectName("subheaderLabel")
         suggestions_layout.addWidget(suggestions_subheader)
-
-        # AI Suggestions section
-        ai_label = QLabel("💡 AI Suggestions")
-        ai_label.setStyleSheet(f"font-weight: 600; color: {COLORS['text']}; padding-top: 12px;")
-        suggestions_layout.addWidget(ai_label)
 
         self.suggestions_widget = AISuggestionsWidget()
         suggestions_layout.addWidget(self.suggestions_widget)
@@ -1114,18 +1195,21 @@ class MainWindow(QMainWindow):
 
     def summarize_conversation(self):
         """Summarize the current conversation."""
+        logger.info("summarize_button_clicked", session_id=self.current_session_id)
         if not self.current_session_id:
             QMessageBox.information(self, "No Conversation", "No conversation to summarize.")
             return
 
         db = get_database()
         messages = db.get_session_messages(self.current_session_id)
+        logger.info("summarize_messages_loaded", msg_count=len(messages))
 
         if not messages:
             QMessageBox.information(self, "Empty", "No messages to summarize.")
             return
 
         message_dicts = [{"speaker": m.speaker, "text": m.text} for m in messages]
+        logger.info("summarize_starting", provider=self._current_provider)
 
         # Show loading state on the button
         btn = self.control_panel.summarize_btn
@@ -1165,38 +1249,62 @@ class MainWindow(QMainWindow):
         self._summary_timeout_timer.timeout.connect(on_summary_timeout)
         self._summary_timeout_timer.start(SUMMARY_TIMEOUT_MS)
 
+        # Store restore callback for signal handlers to access
+        self._summary_restore = restore
+
         def generate():
+            logger.info("generate_thread_started")
             try:
+                logger.info("generate_thread_calling_sync")
                 summary = self.ai_generator.summarize_conversation_sync(message_dicts)
-                if summary:
-                    QTimer.singleShot(0, lambda: self.suggestions_widget.add_summary(summary))
+                logger.info(
+                    "generate_thread_got_summary", summary_len=len(summary) if summary else 0
+                )
+                # Emit Qt signal - QueuedConnection dispatches to GUI thread's event loop
+                logger.info("generate_thread_emitting_signal")
+                self.summary_ready.emit(summary or "")
+                logger.info("generate_thread_signal_emitted")
             except NotConfiguredError as e:
                 logger.error("summarize_conversation: not configured", error=str(e))
-                QTimer.singleShot(
-                    0,
-                    lambda: QMessageBox.warning(
-                        self,
-                        "API Key Not Set",
-                        "OpenRouter API key is not configured. Go to Settings > AI Provider tab.",
-                    ),
+                self.summary_failed.emit(
+                    "OpenRouter API key is not configured. Go to Settings > AI Provider tab."
                 )
             except Exception as e:
                 logger.error("Failed to generate summary", error=str(e))
-                QTimer.singleShot(
-                    0,
-                    lambda: QMessageBox.warning(
-                        self,
-                        "Summary Failed",
-                        "Failed to generate summary:\n" + str(e),
-                    ),
-                )
-            finally:
-                QTimer.singleShot(0, restore)
+                self.summary_failed.emit(str(e))
 
         import threading
 
         thread = threading.Thread(target=generate, daemon=True)
         thread.start()
+
+    def _on_summary_ready(self, summary: str):
+        """Handle summary ready signal (runs on GUI thread)."""
+        logger.info("_on_summary_ready_called", has_summary=bool(summary), length=len(summary))
+        # Stop the timeout timer
+        if getattr(self, "_summary_timeout_timer", None):
+            self._summary_timeout_timer.stop()
+            self._summary_timeout_timer = None
+        # Update UI
+        if summary:
+            self.suggestions_widget.add_summary(summary)
+        # Restore button state
+        if getattr(self, "_summary_restore", None):
+            self._summary_restore()
+            self._summary_restore = None
+
+    def _on_summary_failed(self, error_msg: str):
+        """Handle summary failed signal (runs on GUI thread)."""
+        logger.info("_on_summary_failed_called", error=error_msg)
+        # Stop the timeout timer
+        if getattr(self, "_summary_timeout_timer", None):
+            self._summary_timeout_timer.stop()
+            self._summary_timeout_timer = None
+        QMessageBox.warning(self, "Summary Failed", f"Failed to generate summary:\n{error_msg}")
+        # Restore button state
+        if getattr(self, "_summary_restore", None):
+            self._summary_restore()
+            self._summary_restore = None
 
     def export_conversation(self):
         """Export the current conversation."""

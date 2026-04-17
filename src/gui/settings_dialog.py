@@ -129,13 +129,13 @@ class SettingsDialog(QDialog):
         local_llm_group = self._create_local_llm_group()
         content_layout.addWidget(local_llm_group)
 
-        # STT settings
+        # STT language
         stt_group = self._create_stt_group()
         content_layout.addWidget(stt_group)
 
-        # Qwen3-ASR settings
-        qwen_group = self._create_qwen_group()
-        content_layout.addWidget(qwen_group)
+        # Unified ASR Model settings (backend selector + active backend's sub-settings)
+        asr_group = self._create_asr_model_group()
+        content_layout.addWidget(asr_group)
 
         # Diarization settings
         diarization_group = self._create_diarization_group()
@@ -376,12 +376,11 @@ class SettingsDialog(QDialog):
         return group
 
     def _create_stt_group(self) -> QGroupBox:
-        """Create STT settings group."""
+        """Create STT language group (backend + model live in ASR Model group)."""
         group = QGroupBox()
         layout = QVBoxLayout()
         layout.setSpacing(12)
 
-        # Header with icon and title
         header_layout = QHBoxLayout()
         header_title = QLabel("Speech Recognition")
         header_title.setStyleSheet("font-weight: 600; font-size: 14px; color: #f8fafc;")
@@ -389,7 +388,6 @@ class SettingsDialog(QDialog):
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
-        # Language
         lang_layout = QHBoxLayout()
         lang_label = QLabel("Language:")
         lang_label.setMinimumWidth(100)
@@ -410,33 +408,70 @@ class SettingsDialog(QDialog):
             ]
         )
         lang_layout.addWidget(self.lang_combo, 1)
-
         layout.addLayout(lang_layout)
 
         group.setLayout(layout)
         return group
 
-    def _create_qwen_group(self) -> QGroupBox:
-        """Create Qwen3-ASR settings group."""
-        group = QGroupBox()
-        layout = QVBoxLayout()
-        layout.setSpacing(12)
+    def _create_asr_model_group(self) -> QGroupBox:
+        """Unified ASR Model group.
 
-        # Header with icon and title
+        Qwen3-ASR and faster-whisper are both STT backends, so they live as
+        sub-sections inside a single group. The Backend selector at the top
+        chooses which one is active; only the active backend's sub-controls
+        are visible (the inactive set hides to keep the dialog uncluttered).
+        """
+        group = QGroupBox()
+        root = QVBoxLayout()
+        root.setSpacing(12)
+
+        # Header
         header_layout = QHBoxLayout()
-        header_title = QLabel("Qwen3-ASR Model")
+        header_title = QLabel("ASR Model")
         header_title.setStyleSheet("font-weight: 600; font-size: 14px; color: #f8fafc;")
         header_layout.addWidget(header_title)
         header_layout.addStretch()
-        layout.addLayout(header_layout)
+        root.addLayout(header_layout)
 
-        # Model size
+        # ---- Backend selector (top of card) ----
+        backend_layout = QHBoxLayout()
+        backend_label = QLabel("Backend:")
+        backend_label.setMinimumWidth(100)
+        backend_label.setMinimumHeight(24)
+        backend_layout.addWidget(backend_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItem("Qwen3-ASR (bundled)", "qwen3")
+        self.backend_combo.addItem("faster-whisper (CTranslate2)", "faster-whisper")
+        self.backend_combo.setToolTip(
+            "qwen3:            multilingual Qwen3-ASR model (default, GPU recommended)\n"
+            "faster-whisper:   Whisper + CTranslate2, 4-8x faster on GPU, CPU-capable\n"
+            "Requires restart to take effect."
+        )
+        backend_layout.addWidget(self.backend_combo, 1)
+        root.addLayout(backend_layout)
+
+        # Thin separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("border: none; border-top: 1px solid #334155; margin: 4px 0;")
+        root.addWidget(sep)
+
+        # ---- Qwen3 subsection (widget container so we can hide/show) ----
+        self.qwen_panel = QWidget()
+        qwen_l = QVBoxLayout(self.qwen_panel)
+        qwen_l.setContentsMargins(0, 0, 0, 0)
+        qwen_l.setSpacing(8)
+
+        qwen_sub_title = QLabel("Qwen3-ASR")
+        qwen_sub_title.setStyleSheet("font-weight: 600; color: #e2e8f0; font-size: 12px;")
+        qwen_l.addWidget(qwen_sub_title)
+
         qwen_size_layout = QHBoxLayout()
         qwen_size_label = QLabel("Model Size:")
         qwen_size_label.setMinimumWidth(100)
         qwen_size_label.setMinimumHeight(24)
         qwen_size_layout.addWidget(qwen_size_label, alignment=Qt.AlignmentFlag.AlignVCenter)
-
         self.qwen_size_combo = QComboBox()
         self.qwen_size_combo.addItem("0.6B (~1.2 GB) - Faster", "0.6B")
         self.qwen_size_combo.addItem("1.7B (~3.4 GB) - More Accurate", "1.7B")
@@ -446,47 +481,110 @@ class SettingsDialog(QDialog):
             "• 1.7B: Larger, more accurate, requires more VRAM"
         )
         qwen_size_layout.addWidget(self.qwen_size_combo, 1)
+        qwen_l.addLayout(qwen_size_layout)
 
-        layout.addLayout(qwen_size_layout)
-
-        # Auto-download option
         self.qwen_autodownload_check = QCheckBox("Auto-download model if not present")
         self.qwen_autodownload_check.setToolTip(
             "Automatically download the selected model on first use"
         )
-        layout.addWidget(self.qwen_autodownload_check)
+        qwen_l.addWidget(self.qwen_autodownload_check)
 
-        # Download buttons
         download_label = QLabel("Download Models:")
         download_label.setStyleSheet("font-weight: 600; color: #94a3b8;")
-        layout.addWidget(download_label)
+        qwen_l.addWidget(download_label)
 
         download_layout = QHBoxLayout()
         download_layout.setSpacing(8)
-
         self.download_0_6b_btn = QPushButton("0.6B")
         self.download_0_6b_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.download_0_6b_btn.setToolTip("Download the 0.6B model (~1.2 GB)")
         self.download_0_6b_btn.clicked.connect(lambda: self._download_qwen_model("0.6B"))
         download_layout.addWidget(self.download_0_6b_btn)
-
         self.download_1_7b_btn = QPushButton("1.7B")
         self.download_1_7b_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.download_1_7b_btn.setToolTip("Download the 1.7B model (~3.4 GB)")
         self.download_1_7b_btn.clicked.connect(lambda: self._download_qwen_model("1.7B"))
         download_layout.addWidget(self.download_1_7b_btn)
-
         download_all_btn = QPushButton("All")
         download_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         download_all_btn.setToolTip("Download both model sizes")
         download_all_btn.clicked.connect(lambda: self._download_qwen_model("all"))
         download_layout.addWidget(download_all_btn)
-
         download_layout.addStretch()
-        layout.addLayout(download_layout)
+        qwen_l.addLayout(download_layout)
 
-        group.setLayout(layout)
+        root.addWidget(self.qwen_panel)
+
+        # ---- faster-whisper subsection ----
+        self.fw_panel = QWidget()
+        fw_l = QVBoxLayout(self.fw_panel)
+        fw_l.setContentsMargins(0, 0, 0, 0)
+        fw_l.setSpacing(8)
+
+        fw_sub_title = QLabel("faster-whisper")
+        fw_sub_title.setStyleSheet("font-weight: 600; color: #e2e8f0; font-size: 12px;")
+        fw_l.addWidget(fw_sub_title)
+
+        fw_size_layout = QHBoxLayout()
+        fw_size_label = QLabel("Model Size:")
+        fw_size_label.setMinimumWidth(100)
+        fw_size_label.setMinimumHeight(24)
+        fw_size_layout.addWidget(fw_size_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.fw_size_combo = QComboBox()
+        for size, label in [
+            ("tiny", "tiny (~75 MB)"),
+            ("base", "base (~145 MB)"),
+            ("small", "small (~465 MB)"),
+            ("medium", "medium (~1.5 GB)"),
+            ("large-v3", "large-v3 (~2.9 GB) - accurate"),
+            ("large-v3-turbo", "large-v3-turbo (~1.5 GB) - fast+accurate"),
+        ]:
+            self.fw_size_combo.addItem(label, size)
+        self.fw_size_combo.setToolTip(
+            "large-v3-turbo is a good default: ~4x faster than large-v3 with "
+            "similar quality. Smaller sizes trade accuracy for CPU-friendliness."
+        )
+        fw_size_layout.addWidget(self.fw_size_combo, 1)
+        fw_l.addLayout(fw_size_layout)
+
+        fw_ct_layout = QHBoxLayout()
+        fw_ct_label = QLabel("Compute:")
+        fw_ct_label.setMinimumWidth(100)
+        fw_ct_label.setMinimumHeight(24)
+        fw_ct_layout.addWidget(fw_ct_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.fw_compute_combo = QComboBox()
+        for ct, label in [
+            ("auto", "auto (recommended)"),
+            ("int8", "int8 (CPU fast)"),
+            ("int8_float16", "int8_float16 (CUDA fast)"),
+            ("float16", "float16 (CUDA)"),
+            ("float32", "float32 (slowest, most accurate)"),
+        ]:
+            self.fw_compute_combo.addItem(label, ct)
+        self.fw_compute_combo.setToolTip("`auto` picks int8_float16 on CUDA, int8 on CPU.")
+        fw_ct_layout.addWidget(self.fw_compute_combo, 1)
+        fw_l.addLayout(fw_ct_layout)
+
+        self.fw_vad_check = QCheckBox("Use built-in Silero VAD filter")
+        self.fw_vad_check.setToolTip(
+            "Pre-filter audio to drop silence/music before transcription. "
+            "Recommended on; turn off if you're losing short utterances."
+        )
+        fw_l.addWidget(self.fw_vad_check)
+
+        root.addWidget(self.fw_panel)
+
+        # Toggle visibility when backend changes.
+        self.backend_combo.currentIndexChanged.connect(self._update_backend_panels)
+
+        group.setLayout(root)
         return group
+
+    def _update_backend_panels(self) -> None:
+        """Show only the active backend's sub-panel."""
+        backend = self.backend_combo.currentData() or "qwen3"
+        self.qwen_panel.setVisible(backend == "qwen3")
+        self.fw_panel.setVisible(backend == "faster-whisper")
 
     def _create_diarization_group(self) -> QGroupBox:
         """Create diarization settings group."""
@@ -989,6 +1087,16 @@ class SettingsDialog(QDialog):
         # Diarization
         self.diarization_check.setChecked(config.get("diarization.enabled", True))
 
+        # ASR backend selector. Setting this also drives which backend
+        # sub-panel is visible (via currentIndexChanged -> _update_backend_panels).
+        backend = config.get("stt.backend", "qwen3")
+        idx = self.backend_combo.findData(backend)
+        if idx >= 0:
+            self.backend_combo.setCurrentIndex(idx)
+        # Force a visibility refresh even if the index didn't change (e.g.
+        # first dialog open with default qwen3 already selected).
+        self._update_backend_panels()
+
         # Qwen3-ASR
         qwen_size = config.get("qwen_asr.model_size", "1.7B")
         index = self.qwen_size_combo.findData(qwen_size)
@@ -996,6 +1104,19 @@ class SettingsDialog(QDialog):
             self.qwen_size_combo.setCurrentIndex(index)
 
         self.qwen_autodownload_check.setChecked(config.get("qwen_asr.auto_download", True))
+
+        # faster-whisper
+        fw_size = config.get("faster_whisper.model_size", "large-v3-turbo")
+        idx = self.fw_size_combo.findData(fw_size)
+        if idx >= 0:
+            self.fw_size_combo.setCurrentIndex(idx)
+
+        fw_ct = config.get("faster_whisper.compute_type", "auto")
+        idx = self.fw_compute_combo.findData(fw_ct)
+        if idx >= 0:
+            self.fw_compute_combo.setCurrentIndex(idx)
+
+        self.fw_vad_check.setChecked(bool(config.get("faster_whisper.vad_filter", True)))
 
         # Knowledge Base / RAG - load documents
         if RAG_AVAILABLE:
@@ -1095,6 +1216,11 @@ class SettingsDialog(QDialog):
         lang = lang_text.split()[0]
         config.set("stt.language", lang)
 
+        # Backend selector
+        old_backend = config.get("stt.backend", "qwen3")
+        new_backend = self.backend_combo.currentData() or "qwen3"
+        config.set("stt.backend", new_backend)
+
         # Diarization
         config.set("diarization.enabled", self.diarization_check.isChecked())
 
@@ -1104,9 +1230,25 @@ class SettingsDialog(QDialog):
         config.set("qwen_asr.model_size", new_qwen_size)
         config.set("qwen_asr.auto_download", self.qwen_autodownload_check.isChecked())
 
-        # Hot-reload ASR if the user changed the model size, otherwise the
-        # app would keep using the previously-loaded model until restart.
-        if new_qwen_size != old_qwen_size:
+        # faster-whisper
+        config.set("faster_whisper.model_size", self.fw_size_combo.currentData())
+        config.set("faster_whisper.compute_type", self.fw_compute_combo.currentData())
+        config.set("faster_whisper.vad_filter", self.fw_vad_check.isChecked())
+
+        # Hot-reload ASR if the user changed the Qwen model size *and* stayed
+        # on the qwen3 backend. Changing the backend itself requires a full
+        # app restart (we don't stop/swap to a different backend class at
+        # runtime -- too much moving state to do correctly in a hurry).
+        if new_backend != old_backend:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                "Restart Required",
+                f"ASR backend changed to '{new_backend}'. "
+                "Please restart the app for the change to take effect.",
+            )
+        elif new_backend == "qwen3" and new_qwen_size != old_qwen_size:
             self._reload_asr_model(new_qwen_size)
 
         self.accept()

@@ -1,15 +1,14 @@
 """Priority queue manager for AI question responses."""
 
 import asyncio
-import time
-import uuid
 import threading
+import time
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
-from PySide6.QtCore import QObject, Signal, QTimer
 
-from ..utils.logger import get_logger
+from PySide6.QtCore import QObject, QTimer, Signal
+
 from ..utils.config import get_config
+from ..utils.logger import get_logger
 from .openrouter import AISuggestionGenerator, QuestionDetector
 
 logger = get_logger(__name__)
@@ -85,10 +84,10 @@ class PriorityQueueManager(QObject):
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._active_tasks: int = 0
         self._running: bool = False
-        self._worker_task: Optional[asyncio.Task] = None
-        self._aging_timer: Optional[QTimer] = None
-        self._asyncio_thread: Optional[threading.Thread] = None
-        self._asyncio_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._worker_task: asyncio.Task | None = None
+        self._aging_timer: QTimer | None = None
+        self._asyncio_thread: threading.Thread | None = None
+        self._asyncio_loop: asyncio.AbstractEventLoop | None = None
 
         self.ai_generator = AISuggestionGenerator()
         self.question_detector = QuestionDetector()
@@ -98,11 +97,15 @@ class PriorityQueueManager(QObject):
         self._normal_count: int = 0
 
     def start(self) -> None:
-        """Start the priority queue processing."""
-        if not self.enabled:
-            logger.info("Priority queue disabled")
-            return
+        """Start the priority queue processing.
 
+        When ``enabled`` is False we still need to answer questions -- otherwise
+        every call to ``enqueue_question`` would silently disappear. We fall
+        back to a lightweight direct dispatcher that runs one question at a
+        time on a background asyncio loop and emits ``response_ready`` the
+        moment a response is available. Aging / priority / concurrency caps
+        don't apply in that mode; we just want responses to reach the UI.
+        """
         if self._running:
             logger.warning("Priority queue already running")
             return
@@ -114,12 +117,16 @@ class PriorityQueueManager(QObject):
         self._asyncio_thread = threading.Thread(target=self._run_asyncio_loop, daemon=True)
         self._asyncio_thread.start()
 
-        # Start aging timer (Qt timer for GUI thread safety)
-        self._aging_timer = QTimer()
-        self._aging_timer.timeout.connect(self._apply_aging)
-        self._aging_timer.start(self.aging_interval * 1000)
-
-        logger.info("Priority queue manager started")
+        # Aging timer only makes sense in full-queue mode. In direct-dispatch
+        # mode each item is processed FIFO, so we skip the timer (also avoids
+        # needing a QApplication in tests that stub out the queue).
+        if self.enabled:
+            self._aging_timer = QTimer()
+            self._aging_timer.timeout.connect(self._apply_aging)
+            self._aging_timer.start(self.aging_interval * 1000)
+            logger.info("Priority queue manager started", mode="priority")
+        else:
+            logger.info("Priority queue manager started", mode="direct")
 
     def _run_asyncio_loop(self) -> None:
         """Run the asyncio event loop in a background thread."""
@@ -158,6 +165,17 @@ class PriorityQueueManager(QObject):
             question: The question text
             message_id: Unique identifier for tracking
         """
+        if not self._running:
+            # Queue machinery isn't alive yet. Log loudly and drop rather
+            # than silently losing the question -- callers will see nothing
+            # in the UI but at least the log reveals why.
+            logger.warning(
+                "question_dropped_queue_not_running",
+                preview=question[:80],
+                message_id=message_id[:8] if message_id else None,
+            )
+            return
+
         # Check if keyword-detected (priority) or normal
         is_priority = self.question_detector.is_question(question)
 
@@ -300,7 +318,7 @@ class PriorityQueueManager(QObject):
         """Emit queue depth changed signal."""
         self.queue_depth_changed.emit(self._priority_count, self._normal_count)
 
-    def get_queue_depth(self) -> Tuple[int, int]:
+    def get_queue_depth(self) -> tuple[int, int]:
         """Get current queue depths.
 
         Returns:
@@ -310,7 +328,7 @@ class PriorityQueueManager(QObject):
 
 
 # Global singleton
-_priority_queue_manager: Optional[PriorityQueueManager] = None
+_priority_queue_manager: PriorityQueueManager | None = None
 
 
 def get_priority_queue() -> PriorityQueueManager:

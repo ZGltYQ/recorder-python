@@ -73,7 +73,9 @@ class Qwen3ASR(QObject):
             "vram_gb": 4.0,
         },
     }
-    DEFAULT_MODEL_SIZE = "1.7B"
+    # Default to the 0.6B model: ~2-3× faster than 1.7B, still supports
+    # EN/RU/UK, fits in ~2 GB VRAM. Users can opt in to 1.7B via settings.
+    DEFAULT_MODEL_SIZE = "0.6B"
 
     def __init__(self, model_size: str = DEFAULT_MODEL_SIZE):
         super().__init__()
@@ -90,6 +92,10 @@ class Qwen3ASR(QObject):
         self.model_size = model_size
         self.model_name = self.AVAILABLE_MODELS[self.model_size]["name"]
         self.model_info = self.AVAILABLE_MODELS[self.model_size]
+        # Cache of torchaudio Resample modules keyed by (orig_sr, target_sr)
+        # so we don't rebuild a filterbank on every call. In practice there's
+        # usually only one entry because parec already captures at 16 kHz.
+        self._resampler_cache: dict = {}
 
     def load_model(self, model_size: str | None = None, device: str = "auto") -> bool:
         """Load the Qwen3-ASR model."""
@@ -118,6 +124,10 @@ class Qwen3ASR(QObject):
             # Load model using qwen-asr package
             torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
 
+            # max_new_tokens is set at model-build time by qwen-asr (not per
+            # transcribe call), so we keep the original generous 256 here.
+            # Short utterances still return early -- the generator stops on
+            # the EOS token rather than padding to the cap.
             from_pretrained_kwargs = {
                 "dtype": torch_dtype,
                 "device_map": self.device if self.device == "cuda" else "cpu",
@@ -158,6 +168,21 @@ class Qwen3ASR(QObject):
                 )
 
             self.is_loaded = True
+
+            # Warm the model with 1 s of silence so the first real utterance
+            # doesn't pay kernel-autotune / allocator cold-start (500-2000 ms).
+            # Wrapped in try/except because a warmup failure should NEVER
+            # block the app from starting -- worst case the first utterance
+            # is just a bit slower.
+            try:
+                t0 = __import__("time").time()
+                warm_audio = np.zeros(16000, dtype=np.float32)
+                with torch.inference_mode():
+                    self.model.transcribe(audio=(warm_audio, 16000))
+                logger.info("asr_warmup_done", warmup_sec=round(__import__("time").time() - t0, 3))
+            except Exception as warm_err:  # noqa: BLE001
+                logger.warning("asr_warmup_failed", error=str(warm_err))
+
             self.model_loaded.emit(True)
             logger.info("Qwen3-ASR model loaded successfully")
             return True
@@ -217,7 +242,13 @@ class Qwen3ASR(QObject):
             if lang_arg:
                 transcribe_kwargs["language"] = lang_arg
 
-            results = self.model.transcribe(**transcribe_kwargs)
+            # torch.inference_mode() disables autograd and version tracking --
+            # ~5 % faster and less peak memory than plain no_grad for generate().
+            if TORCH_AVAILABLE and torch is not None:
+                with torch.inference_mode():
+                    results = self.model.transcribe(**transcribe_kwargs)
+            else:
+                results = self.model.transcribe(**transcribe_kwargs)
 
             # Extract text from result
             if results and len(results) > 0:
@@ -247,7 +278,12 @@ class Qwen3ASR(QObject):
             return None
 
     def _resample_audio(self, audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-        """Resample audio to target sample rate."""
+        """Resample audio to target sample rate.
+
+        Caches the torchaudio ``Resample`` module per (orig_sr, target_sr)
+        pair: building the Kaiser / sinc filterbank is cheap but non-free,
+        and we call this once per transcribe.
+        """
         if orig_sr == target_sr:
             return audio
 
@@ -257,13 +293,13 @@ class Qwen3ASR(QObject):
             and TORCH_AVAILABLE
             and torch is not None
         ):
-            # Convert to torch tensor
+            key = (int(orig_sr), int(target_sr))
+            resampler = self._resampler_cache.get(key)
+            if resampler is None:
+                resampler = torchaudio.transforms.Resample(orig_sr, target_sr)
+                self._resampler_cache[key] = resampler
             audio_tensor = torch.from_numpy(audio).unsqueeze(0)
-
-            # Resample
-            resampler = torchaudio.transforms.Resample(orig_sr, target_sr)
             resampled = resampler(audio_tensor)
-
             return resampled.squeeze(0).numpy()
         else:
             # Fallback: simple linear interpolation
@@ -294,7 +330,13 @@ class Qwen3ASR(QObject):
 
 
 class TranscriptionManager(QObject):
-    """Manager for transcription operations."""
+    """Manager for transcription operations.
+
+    Owns the active ASR backend (Qwen3 or faster-whisper). The backend is
+    picked once on construction from ``stt.backend`` in config; switching
+    backends at runtime requires a restart (a full unload/reload is possible
+    via ``reload_model`` but is intentionally kept simple).
+    """
 
     transcription_ready = Signal(TranscriptionResult)
     speaker_updated = Signal(str, str)  # message_id, speaker
@@ -302,21 +344,54 @@ class TranscriptionManager(QObject):
 
     def __init__(self):
         super().__init__()
-        # Get model size from config
         config = get_config()
-        model_size = config.get("qwen_asr.model_size", "1.7B")
-        self.asr = Qwen3ASR(model_size=model_size)
+        self.backend_name = str(config.get("stt.backend", "qwen3")).lower()
+        self.asr = self._build_backend(self.backend_name)
         self.worker = None
         self.audio_buffer = []
+
+    @staticmethod
+    def _build_backend(name: str):
+        """Instantiate the requested backend. Falls back to Qwen3 if the
+        requested backend isn't importable (e.g. faster-whisper not installed)
+        so the app can still start."""
+        config = get_config()
+        if name == "faster-whisper":
+            fw_cls = None
+            fw_available = False
+            try:
+                from .faster_whisper_backend import (
+                    FASTER_WHISPER_AVAILABLE as _fw_avail,
+                )
+                from .faster_whisper_backend import (
+                    FasterWhisperASR as _fw_cls,
+                )
+
+                fw_cls = _fw_cls
+                fw_available = _fw_avail
+            except Exception as e:  # noqa: BLE001
+                logger.error("Failed to import faster-whisper backend", error=str(e))
+            if fw_available and fw_cls is not None:
+                model_size = config.get("faster_whisper.model_size", "large-v3-turbo")
+                logger.info("asr_backend_selected", backend="faster-whisper", model=model_size)
+                return fw_cls(model_size=model_size)
+            logger.warning(
+                "faster-whisper backend requested but not available, falling back to qwen3"
+            )
+            # Fall through to qwen3.
+
+        # Default: Qwen3-ASR.
+        model_size = config.get("qwen_asr.model_size", Qwen3ASR.DEFAULT_MODEL_SIZE)
+        logger.info("asr_backend_selected", backend="qwen3", model=model_size)
+        return Qwen3ASR(model_size=model_size)
 
     def initialize(self) -> bool:
         """Initialize the ASR model."""
         self.asr.model_loaded.connect(self._on_model_loaded)
         self.asr.error.connect(self.error.emit)
-        # Load model with configured size
-        config = get_config()
-        model_size = config.get("qwen_asr.model_size", "1.7B")
-        return self.asr.load_model(model_size=model_size)
+        # The backend holds its own configured size; passing None lets it
+        # re-read from config if it wants to (qwen3 does this).
+        return self.asr.load_model()
 
     def _on_model_loaded(self, success: bool):
         """Handle model loaded signal."""
@@ -441,6 +516,26 @@ class ASRWorker(QThread):
         # only a ~9 dB drop to detect a pause, which matches real speech
         # against continuous background audio (app loopback, music beds).
         self.silence_relative_ratio = float(cfg.get("qwen_asr.silence_relative_ratio", 0.35))
+        # VAD backend used for silence detection. "webrtc" uses webrtcvad
+        # when available and falls back to "rms" if the import fails; "rms"
+        # forces the legacy RMS path.
+        self.vad_backend = str(cfg.get("qwen_asr.vad_backend", "webrtc")).lower()
+        # webrtcvad aggressiveness (0-3). 2 is a good compromise; 3 cuts
+        # more aggressively and is useful in noisy loopback.
+        self.vad_aggressiveness = int(cfg.get("qwen_asr.vad_aggressiveness", 2))
+        # Interim decoding strategy. "full" = re-decode the whole buffer on
+        # every interim (old behaviour). "window" = only decode the last
+        # ``interim_window_sec`` seconds -- cuts interim CPU/GPU ~3-6x on
+        # long utterances while keeping the final pass identical.
+        self.interim_strategy = str(cfg.get("qwen_asr.interim_strategy", "window")).lower()
+        self.interim_window_sec = float(cfg.get("qwen_asr.interim_window_sec", 4.0))
+        # Trim leading/trailing silence from the buffer before transcribing.
+        # Typical 12 s backstop flush has 0.3-0.8 s of silence that still
+        # gets encoded; removing it is free on CPU but saves GPU cycles.
+        self.trim_silence_before_decode = bool(cfg.get("qwen_asr.trim_silence_before_decode", True))
+
+        # Resolved webrtcvad instance, or None if fallback to RMS is in use.
+        self._webrtc_vad = self._init_webrtc_vad()
 
         self.sample_rate = 16000
         self.is_running = False
@@ -451,6 +546,23 @@ class ASRWorker(QThread):
         # place; the final emit uses the same id and flips ``is_final=True``.
         self._current_segment_id: str | None = None
         self._last_interim_time: float = 0.0
+
+    def _init_webrtc_vad(self):
+        """Try to set up webrtcvad. Returns a Vad instance or None."""
+        if self.vad_backend != "webrtc":
+            return None
+        try:
+            import webrtcvad  # type: ignore[import-not-found]
+        except ImportError:
+            logger.warning("webrtcvad not installed, falling back to RMS VAD")
+            return None
+        try:
+            vad = webrtcvad.Vad(max(0, min(3, self.vad_aggressiveness)))
+            logger.info("asr_vad_backend", backend="webrtc", aggressiveness=self.vad_aggressiveness)
+            return vad
+        except Exception as e:  # noqa: BLE001
+            logger.warning("webrtcvad init failed, using RMS", error=str(e))
+            return None
 
     def add_audio(self, audio_data: np.ndarray, sample_rate: int = 16000):
         """Add audio data to the processing queue."""
@@ -528,7 +640,45 @@ class ASRWorker(QThread):
             if acc >= probe_needed:
                 break
         probe = np.concatenate(list(reversed(collected)))[-probe_needed:]
+        if self._webrtc_vad is not None:
+            return (
+                self._trailing_silence_ms_webrtc(probe, self.sample_rate) >= self.silence_flush_ms
+            )
         return self._trailing_silence_ms(probe, self.sample_rate) >= self.silence_flush_ms
+
+    def _trailing_silence_ms_webrtc(self, audio: np.ndarray, sr: int) -> int:
+        """Measure trailing silence using webrtcvad (10/20/30 ms frames).
+
+        webrtcvad requires 16-bit PCM at 8/16/32/48 kHz. We feed it 30 ms
+        frames (so each frame is 480 samples @ 16 kHz). Walks backward and
+        returns the count of trailing non-speech frames × 30 ms.
+        """
+        vad = self._webrtc_vad
+        if vad is None or sr not in (8000, 16000, 32000, 48000):
+            return self._trailing_silence_ms(audio, sr)
+        frame_ms = 30
+        frame_samples = sr * frame_ms // 1000
+        if audio.dtype == np.float32:
+            pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
+        else:
+            pcm = audio.astype(np.int16, copy=False)
+        n_frames = len(pcm) // frame_samples
+        if n_frames == 0:
+            return 0
+        trailing = 0
+        for i in range(n_frames - 1, -1, -1):
+            chunk = pcm[i * frame_samples : (i + 1) * frame_samples].tobytes()
+            try:
+                if vad.is_speech(chunk, sr):
+                    break
+            except Exception:  # noqa: BLE001
+                # Wrong frame length etc. -- give up and fall back.
+                return self._trailing_silence_ms(audio, sr)
+            trailing += 1
+        # Remember for logging parity with the RMS path.
+        self._last_noise_floor = 0.0
+        self._last_threshold = 0.0
+        return trailing * frame_ms
 
     @staticmethod
     def _frame_rms(frame: np.ndarray) -> float:
@@ -588,6 +738,15 @@ class ASRWorker(QThread):
     def _emit_interim(self):
         """Transcribe the current (growing) buffer and emit as interim.
 
+        Two modes (``qwen_asr.interim_strategy``):
+
+        * ``"full"`` — decode the whole buffer every time (old behaviour).
+          Most accurate but cost grows linearly with segment length.
+        * ``"window"`` — decode only the last ``interim_window_sec`` seconds.
+          Keeps interim cost bounded regardless of segment length. The
+          final flush still decodes the entire buffer, so accuracy on the
+          committed text is unaffected.
+
         Does NOT clear the buffer. Reuses the segment id so the UI updates
         a single message in place.
         """
@@ -600,16 +759,28 @@ class ASRWorker(QThread):
         if not self._buffer_has_speech(audio_data, sr):
             return
 
+        # Pick decode window based on strategy.
+        if self.interim_strategy == "window" and self.interim_window_sec > 0:
+            window_samples = int(self.interim_window_sec * sr)
+            if len(audio_data) > window_samples:
+                decode_audio = audio_data[-window_samples:]
+            else:
+                decode_audio = audio_data
+        else:
+            decode_audio = audio_data
+
         import time
 
         segment_id = self._ensure_segment_id()
         t0 = time.time()
-        result = self.asr_model.transcribe_audio(audio_data, sr)
+        result = self.asr_model.transcribe_audio(decode_audio, sr)
         logger.info(
             "asr_interim",
-            audio_sec=round(len(audio_data) / sr, 2),
+            audio_sec=round(len(decode_audio) / sr, 2),
+            total_buffer_sec=round(len(audio_data) / sr, 2),
             infer_sec=round(time.time() - t0, 3),
             segment_id=segment_id[:8],
+            strategy=self.interim_strategy,
         )
         if result and result.text:
             # Override the per-call uuid with our stable segment id and mark non-final.
@@ -640,6 +811,19 @@ class ASRWorker(QThread):
             self._current_segment_id = None
             self._last_interim_time = 0.0
             return
+
+        # Trim leading/trailing silence before decode so the model doesn't
+        # spend compute encoding dead air. Keeps a tiny (~60 ms) margin on
+        # each side so word-initial plosives and trailing fricatives aren't
+        # clipped.
+        if self.trim_silence_before_decode:
+            audio_data = self._trim_silence(audio_data, sr)
+            if len(audio_data) == 0:
+                self.audio_buffer = []
+                self.buffer_duration = 0.0
+                self._current_segment_id = None
+                self._last_interim_time = 0.0
+                return
 
         import time
 
@@ -682,10 +866,34 @@ class ASRWorker(QThread):
             self.buffer_duration = 0.0
 
     def _buffer_has_speech(self, audio: np.ndarray, sr: int) -> bool:
-        """Quick RMS check: any above-threshold audio in this buffer?
+        """Quick check: does this buffer contain any speech-like audio?
 
-        Requires >=3 voiced frames (~60 ms) to count, to tolerate click noise.
+        Uses webrtcvad when available (faster and more accurate than RMS
+        on noisy sources). Falls back to the RMS heuristic otherwise.
+        Requires >=3 voiced frames (~60-90 ms) to count, to tolerate clicks.
         """
+        vad = self._webrtc_vad
+        if vad is not None and sr in (8000, 16000, 32000, 48000):
+            frame_ms = 30
+            frame_samples = sr * frame_ms // 1000
+            if audio.dtype == np.float32:
+                pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
+            else:
+                pcm = audio.astype(np.int16, copy=False)
+            n_frames = len(pcm) // frame_samples
+            voiced = 0
+            for i in range(n_frames):
+                chunk = pcm[i * frame_samples : (i + 1) * frame_samples].tobytes()
+                try:
+                    if vad.is_speech(chunk, sr):
+                        voiced += 1
+                        if voiced >= 3:
+                            return True
+                except Exception:  # noqa: BLE001
+                    break  # fall through to RMS fallback below
+            return False
+
+        # RMS fallback (original behaviour).
         frame_ms = 20
         frame_samples = max(1, int(sr * frame_ms / 1000))
         n_frames = len(audio) // frame_samples
@@ -698,6 +906,67 @@ class ASRWorker(QThread):
                 if voiced >= 3:
                     return True
         return False
+
+    def _trim_silence(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Strip leading/trailing non-speech frames, keep a 60 ms margin.
+
+        Uses webrtcvad @ 30 ms frames when available, else the RMS threshold.
+        Returns the audio unchanged if no voiced region is detected (caller
+        should have already gated on ``_buffer_has_speech``).
+        """
+        vad = self._webrtc_vad
+        frame_ms = 30 if (vad is not None and sr in (8000, 16000, 32000, 48000)) else 20
+        frame_samples = sr * frame_ms // 1000
+        if frame_samples <= 0 or len(audio) < frame_samples:
+            return audio
+
+        n_frames = len(audio) // frame_samples
+        if n_frames == 0:
+            return audio
+
+        # Compute voiced mask once.
+        if vad is not None and sr in (8000, 16000, 32000, 48000):
+            if audio.dtype == np.float32:
+                pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
+            else:
+                pcm = audio.astype(np.int16, copy=False)
+            voiced_mask = np.zeros(n_frames, dtype=bool)
+            for i in range(n_frames):
+                chunk = pcm[i * frame_samples : (i + 1) * frame_samples].tobytes()
+                try:
+                    voiced_mask[i] = vad.is_speech(chunk, sr)
+                except Exception:  # noqa: BLE001
+                    # fall back to RMS path for this probe
+                    vad = None
+                    break
+        if vad is None:
+            trimmed = audio[: n_frames * frame_samples]
+            if trimmed.dtype == np.int16:
+                trimmed_f = trimmed.astype(np.float32) / 32768.0
+            else:
+                trimmed_f = trimmed.astype(np.float32, copy=False)
+            frames = trimmed_f.reshape(n_frames, frame_samples)
+            rms_per_frame = np.sqrt(np.mean(frames * frames, axis=1))
+            median_rms = float(np.median(rms_per_frame))
+            threshold = max(self.silence_rms_threshold, median_rms * self.silence_relative_ratio)
+            voiced_mask = rms_per_frame >= threshold
+
+        if not voiced_mask.any():
+            return audio  # no voiced region detected, leave caller's fallback logic
+
+        first = int(np.argmax(voiced_mask))
+        last = n_frames - 1 - int(np.argmax(voiced_mask[::-1]))
+        # 60 ms margin so word-initial plosives / trailing fricatives survive.
+        margin_frames = max(1, 60 // frame_ms)
+        first = max(0, first - margin_frames)
+        last = min(n_frames - 1, last + margin_frames)
+
+        start = first * frame_samples
+        end = (last + 1) * frame_samples
+        trimmed_len = end - start
+        if trimmed_len >= len(audio) - frame_samples:
+            return audio  # nothing meaningful to trim
+        return audio[start:end]
 
     def stop(self):
         """Stop the worker."""

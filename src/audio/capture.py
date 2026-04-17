@@ -1,19 +1,15 @@
 """Audio capture module for PipeWire/PulseAudio."""
 
-import subprocess
-import threading
 import queue
+import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import Callable, List, Optional, Dict, Any
-import numpy as np
-import sounddevice as sd
-import soundfile as sf
-from PySide6.QtCore import QObject, Signal, QThread
 
-from ..utils.logger import get_logger
+import numpy as np
+from PySide6.QtCore import QObject, QThread, Signal
+
 from ..utils.config import get_config
+from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -35,9 +31,9 @@ class AudioSource:
     index: int
     source_type: SourceType
     is_monitor: bool = False
-    process_id: Optional[int] = None
-    sink_input_id: Optional[int] = None
-    icon_name: Optional[str] = None
+    process_id: int | None = None
+    sink_input_id: int | None = None
+    icon_name: str | None = None
 
 
 @dataclass
@@ -47,7 +43,7 @@ class AudioProcess:
     name: str
     pid: int
     sink_input_id: int
-    icon_name: Optional[str] = None
+    icon_name: str | None = None
 
 
 class AudioCaptureThread(QThread):
@@ -62,8 +58,8 @@ class AudioCaptureThread(QThread):
         self.sample_rate = sample_rate
         self.channels = channels
         self._running = False
-        self._process: Optional[subprocess.Popen] = None
-        self._loopback_modules: List[int] = []
+        self._process: subprocess.Popen | None = None
+        self._loopback_modules: list[int] = []
 
     def run(self):
         """Main capture loop."""
@@ -85,11 +81,19 @@ class AudioCaptureThread(QThread):
             ]
 
             self._process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=4096
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
             )
 
-            # Read audio data in chunks - use 2 second chunks for better ASR accuracy
-            chunk_size = int(self.sample_rate * 2.0 * self.channels * 2)  # 2 second chunks
+            # Read audio data in short chunks so silence-based flushing can
+            # react within ~100 ms instead of being quantised to the parec
+            # read granularity. Downstream ASRWorker only looks at silence
+            # on a 50 ms tick, so 100 ms here is a good match.
+            # Configurable via audio.chunk_duration (seconds).
+            chunk_duration = float(get_config().get("audio.chunk_duration", 0.1))
+            # Floor at 20 ms to avoid chewing CPU on wake-ups; cap at 2.0 s
+            # to preserve the old behaviour if someone explicitly wants it.
+            chunk_duration = max(0.02, min(2.0, chunk_duration))
+            chunk_size = int(self.sample_rate * chunk_duration * self.channels * 2)
 
             while self._running and self._process.poll() is None:
                 data = self._process.stdout.read(chunk_size)
@@ -140,13 +144,13 @@ class AudioCapture(QObject):
 
     def __init__(self):
         super().__init__()
-        self._capture_thread: Optional[AudioCaptureThread] = None
-        self._current_source: Optional[str] = None
+        self._capture_thread: AudioCaptureThread | None = None
+        self._current_source: str | None = None
         self._is_recording = False
         self._audio_buffer: queue.Queue = queue.Queue(maxsize=100)
-        self._loopback_modules: List[int] = []
+        self._loopback_modules: list[int] = []
 
-    def list_sources(self) -> List[AudioSource]:
+    def list_sources(self) -> list[AudioSource]:
         """List available audio sources."""
         sources = []
 
@@ -186,7 +190,7 @@ class AudioCapture(QObject):
 
         return sources
 
-    def _parse_source_block(self, index: int, block: str) -> Optional[AudioSource]:
+    def _parse_source_block(self, index: int, block: str) -> AudioSource | None:
         """Parse a pactl source block."""
         name = None
         description = ""
@@ -211,7 +215,7 @@ class AudioCapture(QObject):
             )
         return None
 
-    def list_audio_processes(self) -> List[AudioProcess]:
+    def list_audio_processes(self) -> list[AudioProcess]:
         """List processes producing audio."""
         processes = []
 
@@ -248,7 +252,7 @@ class AudioCapture(QObject):
 
         return processes
 
-    def _parse_sink_input_block(self, sink_input_id: int, block: str) -> Optional[AudioProcess]:
+    def _parse_sink_input_block(self, sink_input_id: int, block: str) -> AudioProcess | None:
         """Parse a pactl sink input block."""
         name = None
         pid = None
@@ -269,7 +273,7 @@ class AudioCapture(QObject):
             )
         return None
 
-    def list_all_sources(self) -> List[AudioSource]:
+    def list_all_sources(self) -> list[AudioSource]:
         """List all audio sources including hardware, monitors, and applications."""
         sources = self.list_sources()
 
@@ -331,7 +335,7 @@ class AudioCapture(QObject):
         logger.info("Audio capture started", source=source_name)
         return True
 
-    def _create_application_loopback(self, pid: int) -> Optional[str]:
+    def _create_application_loopback(self, pid: int) -> str | None:
         """Create a loopback module for capturing application audio."""
         try:
             # Find the sink input for this PID
@@ -423,6 +427,6 @@ class AudioCapture(QObject):
         """Check if currently recording."""
         return self._is_recording
 
-    def get_current_source(self) -> Optional[str]:
+    def get_current_source(self) -> str | None:
         """Get current audio source name."""
         return self._current_source
