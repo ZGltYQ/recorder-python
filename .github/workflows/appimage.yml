@@ -1,0 +1,188 @@
+name: Build AppImage
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'cuda'
+        type: choice
+        options:
+          - cuda
+          - cpu
+
+permissions:
+  contents: write
+  packages: none
+  attestations: none
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:22.04
+      options: --privileged
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Running build for version: $VERSION"
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y \
+            python3 \
+            python3-pip \
+            python3-venv \
+            git \
+            wget \
+            curl \
+            build-essential \
+            cmake \
+            ninja-build \
+            libglib2.0-0 \
+            libxcb-xinerama0 \
+            libxkbcommon-x11-0 \
+            libegl1 \
+            libdbus-1-3 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xfixes0 \
+            libxcb-cursor0 \
+            libxcb-glx0 \
+            libxcb-xkb1 \
+            libxcb-xinput0 \
+            libxcb-errors0 \
+            libopengl0 \
+            libgbm1 \
+            libasound2-dev \
+            libpulse-mainloop-glib0 \
+            libpulse0 \
+            libportaudio2 \
+            sudo
+
+      - name: Install CUDA dependencies
+        if: inputs.build_type == 'cuda' || github.event_name == 'push'
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          # Add NVIDIA repository for CUDA
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          dpkg -i cuda-keyring_1.1-1_all.deb
+          rm cuda-keyring_1.1-1_all.deb
+          apt-get update
+          apt-get install -y \
+            libcudnn8 \
+            libcublas-12-2 \
+            cuda-runtime-12-2
+
+      - name: Install appimage-builder
+        run: |
+          pip3 install appimage-builder
+
+      - name: Prepare AppDir structure
+        run: |
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/metainfo
+
+      - name: Copy application files
+        run: |
+          cp -r src AppDir/usr/
+          cp -r scripts AppDir/usr/
+
+          # Copy icon if exists
+          if [ -f assets/icon.png ]; then
+            cp assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/recorder-python.png
+          fi
+
+          # Copy desktop entry
+          cp recorder-python.desktop AppDir/usr/share/applications/ 2>/dev/null || true
+
+          # Copy metainfo
+          cp recorder-python.metainfo.xml AppDir/usr/share/metainfo/ 2>/dev/null || true
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --root=AppDir/usr --no-cache-dir -r requirements.txt
+
+      - name: Install package in development mode
+        run: |
+          python3 -m pip install --root=AppDir/usr --no-cache-dir -e .
+
+      - name: Update recipe version
+        run: |
+          ARCH=$(uname -m)
+          TARGET_ARCH="x86_64"
+          if [ "$ARCH" = "aarch64" ]; then
+            TARGET_ARCH="aarch64"
+          fi
+
+          sed -i "s/version: \"2.0.0\"/version: \"${{ steps.version.outputs.version }}\"/" AppImageBuilder.yml
+          sed -i "s/arch: x86_64/arch: $TARGET_ARCH/" AppImageBuilder.yml
+
+      - name: Build AppImage
+        run: |
+          appimage-builder --recipe AppImageBuilder.yml --skip-test
+
+      - name: Find AppImage file
+        id: find_appimage
+        run: |
+          APPIMAGE=$(find . -maxdepth 1 -name "*.AppImage" -type f | head -n1)
+          if [ -z "$APPIMAGE" ]; then
+            APPIMAGE=$(find . -maxdepth 1 -name "*recorder*.AppImage" -type f | head -n1)
+          fi
+          echo "appimage=$APPIMAGE" >> $GITHUB_OUTPUT
+          echo "Found: $APPIMAGE"
+
+      - name: Rename AppImage with architecture
+        run: |
+          ARCH=$(uname -m)
+          TARGET_ARCH="x86_64"
+          if [ "$ARCH" = "aarch64" ]; then
+            TARGET_ARCH="aarch64"
+          fi
+
+          BASENAME=$(basename "${{ steps.find_appimage.outputs.appimage }}" .AppImage)
+          NEW_NAME="${BASENAME}-${TARGET_ARCH}.AppImage"
+          mv "${{ steps.find_appimage.outputs.appimage }}" "$NEW_NAME"
+          echo "Renamed to: $NEW_NAME"
+          echo "appimage_name=$NEW_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: recorder-python-${{ steps.version.outputs.version }}-${{ steps.find_appimage.outputs.appimage_name }}
+          path: recorder-python-*.AppImage
+          retention-days: 30
+
+      - name: Create Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: recorder-python-*.AppImage
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup
+        run: |
+          rm -rf AppDir AppImageBuilder.yml.bak 2>/dev/null || true

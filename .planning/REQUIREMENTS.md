@@ -21,13 +21,13 @@
 
 ### Document Upload (RAG)
 
-- [ ] **RAG-01**: User can upload TXT documents via file picker or drag-drop
-- [ ] **RAG-02**: Uploaded documents parsed and chunked (500-1000 chars with overlap)
-- [ ] **RAG-03**: Document chunks embedded with sentence-transformers (all-MiniLM-L6-v2)
-- [ ] **RAG-04**: Embeddings stored in ChromaDB with source metadata
-- [ ] **RAG-05**: When question detected, app searches document knowledge base (top-k retrieval)
-- [ ] **RAG-06**: Relevant document context included in AI prompt for answering
-- [ ] **RAG-07**: Answers sourced from documents show inline citation ("Answer from: DocumentName.pdf")
+- [x] **RAG-01**: User can upload TXT documents via file picker or drag-drop
+- [x] **RAG-02**: Uploaded documents parsed and chunked (500-1000 chars with overlap)
+- [x] **RAG-03**: Document chunks embedded with sentence-transformers (all-MiniLM-L6-v2)
+- [x] **RAG-04**: Embeddings stored in ChromaDB with source metadata
+- [x] **RAG-05**: When question detected, app searches document knowledge base (top-k retrieval)
+- [x] **RAG-06**: Relevant document context included in AI prompt for answering
+- [x] **RAG-07**: Answers sourced from documents show inline citation ("Answer from: DocumentName.pdf")
 
 ### Screenshot Mode
 
@@ -86,13 +86,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PRIO-02 | Phase 1 | Pending |
 | PRIO-03 | Phase 1 | Pending |
 | PRIO-04 | Phase 1 | Pending |
-| RAG-01 | Phase 3 | Pending |
-| RAG-02 | Phase 3 | Pending |
-| RAG-03 | Phase 3 | Pending |
-| RAG-04 | Phase 3 | Pending |
-| RAG-05 | Phase 3 | Pending |
-| RAG-06 | Phase 3 | Pending |
-| RAG-07 | Phase 3 | Pending |
+| RAG-01 | Phase 3 | Complete |
+| RAG-02 | Phase 3 | Complete |
+| RAG-03 | Phase 3 | Complete |
+| RAG-04 | Phase 3 | Complete |
+| RAG-05 | Phase 3 | Complete |
+| RAG-06 | Phase 3 | Complete |
+| RAG-07 | Phase 3 | Complete |
 | SCRN-01 | Phase 4 | Pending |
 | SCRN-02 | Phase 4 | Pending |
 | SCRN-03 | Phase 4 | Pending |

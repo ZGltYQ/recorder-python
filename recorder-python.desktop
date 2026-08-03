@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Recorder Python
+Comment=Audio recorder with speech-to-text transcription
+Exec=recorder-python %U
+Icon=recorder-python
+Terminal=false
+Type=Application
+Categories=Audio;AudioVideo;Recorder;SpeechRecognition;
+Keywords=audio;recorder;speech;text;transcription;asr;microphone;
+MimeType=application/x-audio;
+StartupNotify=true
+StartupWMClass=recorder-python

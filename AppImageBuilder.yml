@@ -1,0 +1,118 @@
+# appimage-builder recipe for recorder-python
+# See https://appimage-builder.readthedocs.io for details
+
+version: 1
+
+script:
+  - rm -rf AppDir | true
+  - mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+  - mkdir -p AppDir/usr/share/applications
+  - mkdir -p AppDir/usr/share/metainfo
+
+  # Copy application source
+  - cp -r src AppDir/usr/
+  - cp -r scripts AppDir/usr/
+
+  # Copy icon if exists
+  - test -f assets/icon.png && cp assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/recorder-python.png || true
+
+  # Copy desktop entry
+  - cp recorder-python.desktop AppDir/usr/share/applications/ 2>/dev/null || true
+
+  # Copy metainfo for software centers
+  - cp recorder-python.metainfo.xml AppDir/usr/share/metainfo/ 2>/dev/null || true
+
+  # Install Python dependencies (CPU + CUDA)
+  - python3 -m pip install --root=AppDir/usr --no-cache-dir -r requirements.txt
+
+  # Install the package in development mode to get entry points
+  - python3 -m pip install --root=AppDir/usr --no-cache-dir -e .
+
+AppDir:
+  path: ./AppDir
+
+  app_info:
+    id: com.recorder.python
+    name: Recorder Python
+    icon: recorder-python
+    version: "2.0.0"
+    exec: usr/bin/recorder-python
+    exec_args: "$@"
+
+  apt:
+    arch: amd64
+    sources:
+      - sourceline: 'deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse'
+        key_url: 'http://keyserver.ubuntu.com/pks/lookup?op=get&search=0x3b4fe6acc0b21f32'
+
+    include:
+      # Core runtime
+      - python3
+      - python3-pip
+      - python3-venv
+      - libglib2.0-0
+      - libxcb-xinerama0
+      - libxkbcommon-x11-0
+      - libegl1
+      - libdbus-1-3
+      - libxcb-icccm4
+      - libxcb-image0
+      - libxcb-keysyms1
+      - libxcb-randr0
+      - libxcb-render-util0
+      - libxcb-shape0
+      - libxcb-xfixes0
+      - libxcb-cursor0
+      - libxcb-glx0
+      - libxcb-xkb1
+      - libxcb-xinput0
+      - libxcb-errors0
+
+      # Audio dependencies
+      - libasound2-dev
+      - libpulse-mainloop-glib0
+      - libpulse0
+      - pipewire
+      - libportaudio2
+
+      # Qt OpenGL
+      - libopengl0
+      - libgbm1
+
+      # NVIDIA CUDA runtime (for CUDA-enabled builds)
+      - nvidia-cuda-toolkit-gcc  # Provides CUDA headers for PyTorch
+      - libcudnn8  # cuDNN runtime
+      - libcublas-12-2  # CUDA BLAS library
+
+    exclude:
+      - python3-venv-*
+      - python3-pip-*
+
+  runtime:
+    env:
+      PATH: '${APPDIR}/usr/bin:${PATH}'
+      PYTHONHOME: '${APPDIR}/usr'
+      LD_LIBRARY_PATH: '${APPDIR}/usr/lib:${APPDIR}/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}'
+      QT_PLUGIN_PATH: '${APPDIR}/usr/lib/qt6/plugins'
+      QML2_IMPORT_PATH: '${APPDIR}/usr/lib/qt6/qml'
+      XDG_DATA_DIRS: '${APPDIR}/usr/share:${XDG_DATA_DIRS}'
+
+  files:
+    include:
+      # Include CUDA libraries that PyTorch needs
+      - /usr/local/cuda/lib64/libcudart.so.*
+      - /usr/local/cuda/lib64/libcublas.so.*
+      - /usr/local/cuda/lib64/libcudnn.so.*
+
+    exclude:
+      # Exclude unnecessary files
+      - usr/lib/python*/__pycache__
+      - usr/lib/python*/site-packages/__pycache__
+      - usr/share/doc/*
+      - usr/share/man/*
+      - usr/share/info/*
+
+AppImage:
+  update-information: 'guess'
+  sign-key: None
+  arch: x86_64

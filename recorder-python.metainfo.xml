@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.recorder.python</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Recorder Python</name>
+  <summary>Audio recorder with speech-to-text transcription and speaker diarization</summary>
+  <description>
+    <p>
+      Recorder Python is a desktop application for real-time audio recording
+      with automatic speech recognition (ASR) using Qwen3 ASR models.
+      It features speaker diarization to identify different speakers in the recording.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Real-time audio recording from microphone</li>
+      <li>Speech-to-text transcription using Qwen3 ASR models</li>
+      <li>Speaker diarization to identify different speakers</li>
+      <li>Support for GPU acceleration (CUDA)</li>
+      <li>Export transcriptions to various formats</li>
+      <li>Modern Qt-based user interface</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">recorder-python.desktop</launchable>
+  <url type="homepage">https://github.com/audio-recorder-stt/recorder-python</url>
+  <url type="bugtracker">https://github.com/audio-recorder-stt/recorder-python/issues</url>
+  <developer_name>Audio Recorder Team</developer_name>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="2.0.0" date="2026-04-13">
+      <description>
+        <p>Initial AppImage release with full CUDA support</p>
+      </description>
+    </release>
+  </releases>
+  <categories>
+    <category>Audio</category>
+    <category>AudioVideo</category>
+    <category>Recorder</category>
+    <category>SpeechRecognition</category>
+  </categories>
+  <keywords>
+    <keyword>audio</keyword>
+    <keyword>recorder</keyword>
+    <keyword>speech</keyword>
+    <keyword>text</keyword>
+    <keyword>transcription</keyword>
+    <keyword>asr</keyword>
+    <keyword>microphone</keyword>
+    <keyword>qwen</keyword>
+    <keyword>diarization</keyword>
+  </keywords>
+  <requires>
+    <display_length compare="ge">800</display_length>
+  </requires>
+</component>
